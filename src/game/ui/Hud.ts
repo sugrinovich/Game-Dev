@@ -8,6 +8,7 @@ export class Hud {
   private readonly hpFill: Phaser.GameObjects.Rectangle;
   private readonly hpText: Phaser.GameObjects.Text;
   private readonly coinText: Phaser.GameObjects.Text;
+  private readonly phaseText: Phaser.GameObjects.Text;
 
   constructor(scene: Phaser.Scene) {
     const { width } = scene.scale;
@@ -37,6 +38,7 @@ export class Hud {
       .text(width - 90, barY, '0', textStyle(24))
       .setOrigin(0, 0.5)
       .setDepth(DEPTH.hud);
+    this.phaseText = scene.add.text(width - 230, barY, 'Фаза 1', textStyle(18, UI_COLORS.textMuted)).setOrigin(1, 0.5).setDepth(DEPTH.hud);
 
     // подсказка
     scene.add
@@ -53,5 +55,9 @@ export class Hud {
 
   setCoins(coins: number): void {
     this.coinText.setText(String(coins));
+  }
+
+  setPhase(phase: number, weaponName = ''): void {
+    this.phaseText.setText(`Фаза ${phase}${weaponName ? ` · ${weaponName}` : ''}`);
   }
 }

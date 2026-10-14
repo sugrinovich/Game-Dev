@@ -65,6 +65,16 @@ export class EnemyManager {
     );
   }
 
+  damage(enemy: Enemy, amount: number): void {
+    enemy.hp -= amount;
+    enemy.setTint(0xffdd88);
+    if (enemy.hp <= 0) {
+      enemy.destroy();
+      const index = this.enemies.indexOf(enemy);
+      if (index >= 0) this.enemies.splice(index, 1);
+    }
+  }
+
   private updateSpawnTimer(dt: number, target: Point): void {
     this.spawnTimer += dt;
     if (this.spawnTimer < this.config.intervalSeconds) return;

@@ -1,4 +1,5 @@
 import type { EnemyTypeId } from './characters';
+import { SETTINGS } from './settings';
 
 /** Всё, что описывает одну локацию: размер, цвета, правила появления врагов и монет. */
 export interface LocationConfig {
@@ -42,16 +43,10 @@ export const LOCATIONS = {
     playerStart: { x: 480, y: 340 },
     enemySpawn: {
       enemyType: 'alien',
-      startCount: 3,
-      intervalSeconds: 2.5,
-      maxEnemies: 14,
-      telegraphSeconds: 0.8,
-      minDistanceFromPlayer: 220,
-      edgeMargin: 30,
+      ...SETTINGS.spawn,
     },
     coinSpawn: {
-      edgeMargin: 40,
-      minDistanceFromPlayer: 140,
+      ...SETTINGS.coinSpawn,
     },
   },
 } satisfies Record<string, LocationConfig>;

@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { Player } from '../characters/Player';
 import { DEFAULT_PLAYER, PLAYER_CHARACTERS } from '../configs/characters';
-import { SCENES } from '../configs/game';
+import { DEPTH, SCENES } from '../configs/game';
 import { DEFAULT_LOCATION, LOCATIONS } from '../configs/locations';
 import { Arena } from '../locations/Arena';
 import { CoinSpawner } from '../systems/CoinSpawner';
@@ -9,8 +9,10 @@ import { EnemyManager } from '../systems/EnemyManager';
 import { GameOverMenu } from '../ui/GameOverMenu';
 import { Hud } from '../ui/Hud';
 import { PauseMenu } from '../ui/PauseMenu';
+import { SETTINGS, type WeaponId } from '../configs/settings';
+import { Weapons } from '../systems/Weapons';
 
-type Mode = 'playing' | 'paused' | 'gameover';
+type Mode = 'playing' | 'paused' | 'selecting' | 'gameover';
 
 /**
  * Главный экран: арена, игрок, враги, монета и интерфейс.
@@ -24,9 +26,13 @@ export class GameScene extends Phaser.Scene {
   private hud!: Hud;
   private pauseMenu!: PauseMenu;
   private gameOverMenu!: GameOverMenu;
+  private weapons!: Weapons;
 
   private coinCount = 0;
   private mode: Mode = 'playing';
+  private phase = 1;
+  private weaponId: WeaponId | null = null;
+  private selectionObjects: Phaser.GameObjects.GameObject[] = [];
 
   constructor() {
     super(SCENES.game);
@@ -38,6 +44,8 @@ export class GameScene extends Phaser.Scene {
 
     this.coinCount = 0;
     this.mode = 'playing';
+    this.phase = 1;
+    this.weaponId = null;
     this.anims.resumeAll();
 
     this.arena = new Arena(this, location);
@@ -48,6 +56,7 @@ export class GameScene extends Phaser.Scene {
     this.hud = new Hud(this);
     this.hud.setHp(this.player.hp, character.maxHp);
     this.hud.setCoins(0);
+    this.hud.setPhase(1);
 
     this.pauseMenu = new PauseMenu(this, {
       onResume: () => this.resume(),
@@ -56,6 +65,7 @@ export class GameScene extends Phaser.Scene {
     this.gameOverMenu = new GameOverMenu(this, () => this.restart());
 
     this.enemies.begin(this.player);
+    this.weapons = new Weapons(this, this.enemies, this.player);
     this.coins.spawnIfNone(this.player);
     this.bindKeys();
   }
@@ -64,13 +74,16 @@ export class GameScene extends Phaser.Scene {
     if (this.mode !== 'playing') return;
 
     const dt = Math.min(delta, 50) / 1000;
+    const phaseSpeed = this.phase === 2 ? SETTINGS.phaseTwoSpeedMultiplier : 1;
 
-    this.player.tick(dt, this.arena);
-    this.enemies.update(dt, this.player);
+    this.player.tick(dt * phaseSpeed, this.arena);
+    this.enemies.update(dt * phaseSpeed, this.player);
+    if (this.weaponId) this.weapons.update(dt * phaseSpeed, this.weaponId);
 
     if (this.coins.tryCollect(this.player)) {
       this.coinCount += 1;
       this.hud.setCoins(this.coinCount);
+      if (this.coinCount >= SETTINGS.phaseTwoCoins && this.phase === 1) this.startPhaseTwo();
     }
 
     const attacker = this.enemies.findTouching(this.player);
@@ -86,6 +99,27 @@ export class GameScene extends Phaser.Scene {
     this.mode = 'paused';
     this.anims.pauseAll();
     this.pauseMenu.show();
+  }
+
+  private startPhaseTwo(): void {
+    this.phase = 2;
+    this.mode = 'selecting';
+    const title = this.add.text(480, 150, 'Фаза 2: выберите оружие', { fontSize: '28px', color: '#f8fafc' }).setOrigin(0.5).setDepth(DEPTH.menu);
+    this.selectionObjects.push(title);
+    (Object.keys(SETTINGS.weapons) as WeaponId[]).forEach((id, index) => {
+      const config = SETTINGS.weapons[id];
+      const button = this.add.text(180 + index * 300, 300, `${config.name}\n${config.description}`, { fontSize: '18px', color: '#0f172a', backgroundColor: '#facc15', padding: { x: 14, y: 12 }, align: 'center', wordWrap: { width: 240 } }).setOrigin(0.5).setInteractive({ useHandCursor: true }).setDepth(DEPTH.menu);
+      button.on('pointerdown', () => this.selectWeapon(id));
+      this.selectionObjects.push(button);
+    });
+  }
+
+  private selectWeapon(id: WeaponId): void {
+    this.weaponId = id;
+    this.mode = 'playing';
+    this.selectionObjects.forEach((object) => object.destroy());
+    this.selectionObjects = [];
+    this.hud.setPhase(2, SETTINGS.weapons[id].name);
   }
 
   private resume(): void {

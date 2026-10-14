@@ -1,4 +1,5 @@
 import { ANIMATIONS, TEXTURES } from './assets';
+import { SETTINGS } from './settings';
 
 /** Параметры персонажа игрока. */
 export interface PlayerConfig {
@@ -20,6 +21,7 @@ export interface EnemyConfig {
   animation: string;
   speed: number;
   damage: number;
+  hp: number;
   radius: number;
 }
 
@@ -29,10 +31,7 @@ export const PLAYER_CHARACTERS = {
     name: 'Картошка',
     texture: TEXTURES.player,
     animation: ANIMATIONS.player,
-    maxHp: 10,
-    speed: 210,
-    radius: 16,
-    invulnerabilitySeconds: 0.7,
+    ...SETTINGS.player,
   },
 } satisfies Record<string, PlayerConfig>;
 
@@ -41,9 +40,7 @@ export const ENEMY_TYPES = {
   alien: {
     texture: TEXTURES.enemy,
     animation: ANIMATIONS.enemy,
-    speed: 100,
-    damage: 1,
-    radius: 14,
+    ...SETTINGS.enemy,
   },
 } satisfies Record<string, EnemyConfig>;
 

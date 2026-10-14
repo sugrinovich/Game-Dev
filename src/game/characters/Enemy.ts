@@ -6,11 +6,13 @@ import type { Point } from '../types';
 /** Враг: просто идёт к цели. */
 export class Enemy extends Phaser.GameObjects.Sprite {
   readonly config: EnemyConfig;
+  hp: number;
   private readonly speed: number;
 
   constructor(scene: Phaser.Scene, x: number, y: number, config: EnemyConfig) {
     super(scene, x, y, config.texture);
     this.config = config;
+    this.hp = config.hp;
     // у каждого врага чуть своя скорость, чтобы толпа не шла идеальной кучей
     this.speed = config.speed * Phaser.Math.FloatBetween(0.9, 1.15);
 
