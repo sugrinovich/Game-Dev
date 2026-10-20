@@ -1,21 +1,22 @@
 import Phaser from 'phaser';
-import { Enemy } from '../characters/Enemy';
-import type { Player } from '../characters/Player';
-import { TEXTURES } from '../configs/assets';
-import { ENEMY_TYPES } from '../configs/characters';
-import { DEPTH } from '../configs/game';
-import type { LocationConfig } from '../configs/locations';
-import type { Arena } from '../locations/Arena';
+import type { Mob } from '../characters/Mob';
+import { Slime } from '../characters/Slime';
+import type { EnemyTypeId } from '../configs/characters';
+import { SETTINGS } from '../configs/settings';
 import type { Point } from '../types';
 
-type EnemySpawnConfig = LocationConfig['enemySpawn'];
 
-/** Враг, который ещё не появился: на его месте мигает красная метка. */
+const MAX_MOVEMENT_STEP_SECONDS = 1 / 60;
+const SEPARATION_TOLERANCE = 0.1;
+
+const MOB_CLASSES = { slime: Slime } satisfies Record<EnemyTypeId,
+  new (scene: Phaser.Scene, x: number, y: number) => Mob>;
+
+/** Задержка появления врага без отдельного спрайта метки. */
 interface PendingSpawn {
   x: number;
   y: number;
   timeLeft: number;
-  marker: Phaser.GameObjects.Image;
 }
 
 /**
@@ -23,18 +24,15 @@ interface PendingSpawn {
  * как идут к игроку и не слипаются ли друг с другом.
  */
 export class EnemyManager {
-  readonly enemies: Enemy[] = [];
+  readonly enemies: Mob[] = [];
 
   private readonly pending: PendingSpawn[] = [];
   private spawnTimer = 0;
   private readonly scene: Phaser.Scene;
-  private readonly arena: Arena;
-  private readonly config: EnemySpawnConfig;
+  private readonly config = { ...SETTINGS.spawn, enemyType: 'slime' as const };
 
-  constructor(scene: Phaser.Scene, arena: Arena, config: EnemySpawnConfig) {
+  constructor(scene: Phaser.Scene) {
     this.scene = scene;
-    this.arena = arena;
-    this.config = config;
   }
 
   /** Первые враги в начале игры. */
@@ -48,30 +46,14 @@ export class EnemyManager {
     this.updateSpawnTimer(dt, target);
     this.updatePending(dt);
 
-    for (const enemy of this.enemies) {
-      enemy.chase(dt, target);
-    }
-    this.separate();
-  }
-
-  /** Враг, который сейчас касается игрока (или null). */
-  findTouching(player: Player): Enemy | null {
-    return (
-      this.enemies.find(
-        (enemy) =>
-          Phaser.Math.Distance.Between(enemy.x, enemy.y, player.x, player.y) <
-          enemy.config.radius + player.config.radius,
-      ) ?? null
-    );
-  }
-
-  damage(enemy: Enemy, amount: number): void {
-    enemy.hp -= amount;
-    enemy.setTint(0xffdd88);
-    if (enemy.hp <= 0) {
-      enemy.destroy();
-      const index = this.enemies.indexOf(enemy);
-      if (index >= 0) this.enemies.splice(index, 1);
+    // При задержке кадра решаем движение и контакты небольшими шагами.
+    const steps = Math.max(1, Math.ceil(dt / MAX_MOVEMENT_STEP_SECONDS));
+    const step = dt / steps;
+    for (let i = 0; i < steps; i++) {
+      for (const enemy of this.enemies) {
+        enemy.chase(step, target);
+      }
+      this.separate();
     }
   }
 
@@ -85,46 +67,80 @@ export class EnemyManager {
     }
   }
 
-  /** Выбирает место и ставит туда мигающую метку. */
+  /** Выбираем наиболее удалённую из случайных точек в окне. */
   private queueSpawn(target: Point): void {
-    let point = this.arena.randomPoint(this.config.edgeMargin);
-    for (let i = 0; i < 20; i++) {
-      if (Phaser.Math.Distance.Between(point.x, point.y, target.x, target.y) >= this.config.minDistanceFromPlayer) break;
-      point = this.arena.randomPoint(this.config.edgeMargin);
+    const { width, height } = this.scene.scale;
+    const marginX = Math.min(this.config.edgeMargin, width / 2);
+    const marginY = Math.min(this.config.edgeMargin, height / 2);
+    let point = { x: width / 2, y: height / 2 };
+    let farthest = -1;
+    const attempts = 20;
+    for (let i = 0; i < attempts; i++) {
+      const candidate = {
+        x: Phaser.Math.FloatBetween(marginX, width - marginX),
+        y: Phaser.Math.FloatBetween(marginY, height - marginY),
+      };
+      const distance = Math.hypot(candidate.x - target.x, candidate.y - target.y);
+      if (distance > farthest) { point = candidate; farthest = distance; }
+      if (distance >= this.config.minDistanceFromPlayer && distance <= this.config.maxDistanceFromPlayer) {
+        point = candidate;
+        break;
+      }
     }
-
-    const marker = this.scene.add.image(point.x, point.y, TEXTURES.spawnMarker).setDepth(DEPTH.markers);
-    this.pending.push({ x: point.x, y: point.y, timeLeft: this.config.telegraphSeconds, marker });
+    this.pending.push({ ...point, timeLeft: this.config.telegraphSeconds });
   }
 
-  /** Когда метка догорела — на её месте появляется враг. */
+  /** После задержки появляется моб. */
   private updatePending(dt: number): void {
     for (let i = this.pending.length - 1; i >= 0; i--) {
       const spawn = this.pending[i];
       if (!spawn) continue;
       spawn.timeLeft -= dt;
-      spawn.marker.setAlpha(0.55 + 0.45 * Math.sin(spawn.timeLeft * 18));
 
       if (spawn.timeLeft <= 0) {
-        spawn.marker.destroy();
         this.pending.splice(i, 1);
-        this.enemies.push(new Enemy(this.scene, spawn.x, spawn.y, ENEMY_TYPES[this.config.enemyType]));
+        const MobClass = MOB_CLASSES[this.config.enemyType];
+        this.enemies.push(new MobClass(this.scene, spawn.x, spawn.y));
       }
     }
   }
 
   /** Расталкивает врагов, чтобы они не стояли друг в друге. */
   private separate(): void {
+    // Сдвиг одной пары может сблизить соседей, поэтому повторяем проход.
+    for (let pass = 0; pass < SETTINGS.mobSpacing.iterations; pass++) {
+      let changed = this.separatePairs();
+      for (const enemy of this.enemies) {
+        const { x, y } = enemy;
+        const marginX = Math.min(enemy.config.separationRadius, this.scene.scale.width / 2);
+        const marginY = Math.min(enemy.config.separationRadius, this.scene.scale.height / 2);
+        enemy.x = Phaser.Math.Clamp(enemy.x, marginX, this.scene.scale.width - marginX);
+        enemy.y = Phaser.Math.Clamp(enemy.y, marginY, this.scene.scale.height - marginY);
+        changed ||= enemy.x !== x || enemy.y !== y;
+      }
+      if (!changed) break;
+    }
+  }
+
+  private separatePairs(): boolean {
+    let changed = false;
     for (let i = 0; i < this.enemies.length; i++) {
       for (let j = i + 1; j < this.enemies.length; j++) {
         const a = this.enemies[i];
         const b = this.enemies[j];
         if (!a || !b) continue;
-        const minDistance = a.config.radius + b.config.radius;
+        const minDistance = a.config.separationRadius + b.config.separationRadius + SETTINGS.mobSpacing.gap;
         const dx = b.x - a.x;
         const dy = b.y - a.y;
-        const distance = Math.hypot(dx, dy);
-        if (distance > 0 && distance < minDistance) {
+        const distanceSquared = dx * dx + dy * dy;
+        if (distanceSquared >= (minDistance - SEPARATION_TOLERANCE) ** 2) continue;
+        changed = true;
+        const distance = Math.sqrt(distanceSquared);
+        if (distance === 0) {
+          // У совпавших центров нет направления: разводим врагов по горизонтали.
+          a.x -= minDistance / 2;
+          b.x += minDistance / 2;
+        } else if (distance < minDistance) {
           const push = (minDistance - distance) / 2;
           a.x -= (dx / distance) * push;
           a.y -= (dy / distance) * push;
@@ -132,8 +148,7 @@ export class EnemyManager {
           b.y += (dy / distance) * push;
         }
       }
-      const enemy = this.enemies[i];
-      if (enemy) this.arena.keepInside(enemy, enemy.config.radius);
     }
+    return changed;
   }
 }

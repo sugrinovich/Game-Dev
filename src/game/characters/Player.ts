@@ -1,26 +1,27 @@
 import Phaser from 'phaser';
 import type { PlayerConfig } from '../configs/characters';
+import { PLAYER_WALK_ANIMATIONS, PLAYER_IDLE_ANIMATIONS, type PlayerDirection } from '../configs/assets';
 import { DEPTH } from '../configs/game';
-import type { Arena } from '../locations/Arena';
 
 type MoveKeys = Record<'up' | 'down' | 'left' | 'right', Phaser.Input.Keyboard.Key>;
 
-/** Персонаж игрока: движение стрелками / WASD, здоровье, неуязвимость после удара. */
+/** Персонаж игрока: движение стрелками / WASD и анимации. */
 export class Player extends Phaser.GameObjects.Sprite {
   readonly config: PlayerConfig;
-  hp: number;
 
   private readonly cursors: Phaser.Types.Input.Keyboard.CursorKeys;
   private readonly wasd: MoveKeys;
-  private invulnerableLeft = 0;
+  private facing: PlayerDirection = 'down';
 
   constructor(scene: Phaser.Scene, x: number, y: number, config: PlayerConfig) {
     super(scene, x, y, config.texture);
     this.config = config;
-    this.hp = config.maxHp;
+    this.setDisplaySize(config.displaySize, config.displaySize);
+    this.texture.setFilter(Phaser.Textures.FilterMode.NEAREST);
 
     scene.add.existing(this);
     this.setDepth(DEPTH.player);
+    this.play(PLAYER_IDLE_ANIMATIONS.down);
 
     const keyboard = scene.input.keyboard;
     if (!keyboard) {
@@ -35,12 +36,8 @@ export class Player extends Phaser.GameObjects.Sprite {
     }) as MoveKeys;
   }
 
-  get isDead(): boolean {
-    return this.hp <= 0;
-  }
-
   /** Вызывается каждый кадр. dt — секунды с прошлого кадра. */
-  tick(dt: number, arena: Arena): void {
+  tick(dt: number): void {
     let dx = 0;
     let dy = 0;
     if (this.cursors.left.isDown || this.wasd.left.isDown) dx -= 1;
@@ -48,44 +45,30 @@ export class Player extends Phaser.GameObjects.Sprite {
     if (this.cursors.up.isDown || this.wasd.up.isDown) dy -= 1;
     if (this.cursors.down.isDown || this.wasd.down.isDown) dy += 1;
 
+    // Движение по четырём направлениям: вертикальная клавиша имеет приоритет.
+    if (dy !== 0) dx = 0;
+
     const moving = dx !== 0 || dy !== 0;
     if (moving) {
-      const length = Math.hypot(dx, dy);
-      this.x += (dx / length) * this.config.speed * dt;
-      this.y += (dy / length) * this.config.speed * dt;
+      this.x += dx * this.config.speed * dt;
+      this.y += dy * this.config.speed * dt;
     }
-    arena.keepInside(this, this.config.radius);
+    const marginX = Math.min(this.config.radius, this.scene.scale.width / 2);
+    const marginY = Math.min(this.config.radius, this.scene.scale.height / 2);
+    this.x = Phaser.Math.Clamp(this.x, marginX, this.scene.scale.width - marginX);
+    this.y = Phaser.Math.Clamp(this.y, marginY, this.scene.scale.height - marginY);
 
-    if (dx !== 0) this.setFlipX(dx < 0);
     if (moving) {
-      this.anims.play(this.config.animation, true);
+      this.facing = this.getFacingDirection(dx, dy);
+      this.play(PLAYER_WALK_ANIMATIONS[this.facing], true);
     } else {
-      this.anims.stop();
-      this.setFrame(0);
+      this.play(PLAYER_IDLE_ANIMATIONS[this.facing], true);
     }
 
-    this.updateInvulnerability(dt);
   }
 
-  /** Возвращает true, если урон прошёл (а не был проигнорирован из-за неуязвимости). */
-  takeDamage(amount: number): boolean {
-    if (this.invulnerableLeft > 0 || this.isDead) return false;
-    this.hp = Math.max(0, this.hp - amount);
-    this.invulnerableLeft = this.config.invulnerabilitySeconds;
-    this.setTint(0xff8888);
-    return true;
-  }
-
-  private updateInvulnerability(dt: number): void {
-    if (this.invulnerableLeft <= 0) return;
-
-    this.invulnerableLeft = Math.max(0, this.invulnerableLeft - dt);
-    if (this.invulnerableLeft === 0 && !this.isDead) {
-      this.clearTint();
-      this.setAlpha(1);
-    } else {
-      // мигание
-      this.setAlpha(Math.floor(this.invulnerableLeft * 16) % 2 === 0 ? 0.4 : 1);
-    }
+  private getFacingDirection(dx: number, dy: number): PlayerDirection {
+    if (dy !== 0) return dy < 0 ? 'up' : 'down';
+    return dx < 0 ? 'left' : 'right';
   }
 }

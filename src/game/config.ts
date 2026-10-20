@@ -10,11 +10,15 @@ export function createGame(parent: string): Phaser.Game {
     width: GAME.width,
     height: GAME.height,
     backgroundColor: GAME.backgroundColor,
-    pixelArt: false,
+    // Nearest-фильтр сохраняет пиксельные текстуры, дробные координаты — плавность.
+    pixelArt: true,
+    roundPixels: false,
+    // Короткое сглаживание без стартового ограничения времени на 120 кадров.
+    // requestAnimationFrame синхронизирует отрисовку с обновлением экрана.
+    fps: { target: GAME.targetFps, panicMax: 0, deltaHistory: GAME.frameHistory },
     scene: [BootScene, GameScene],
     scale: {
-      mode: Phaser.Scale.FIT,
-      autoCenter: Phaser.Scale.CENTER_BOTH,
+      mode: Phaser.Scale.RESIZE,
     },
   };
 
