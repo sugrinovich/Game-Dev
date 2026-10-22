@@ -1,6 +1,6 @@
 /** Движение персонажей, бой, появление мобов. Все числа — в пикселях внутреннего разрешения (480x270). */
 export const SETTINGS = {
-  player: { displaySize: 64, speed: 78, radius: 5 },
+  player: { displaySize: 64, speed: 60, radius: 5 },
   enemy: { speed: 36, radius: 6, separationRadius: 8 },
   mobSpacing: { gap: 2, iterations: 8 },
   /** Волны мобов в вылазке: дальше от игрока, чем виден экран. */

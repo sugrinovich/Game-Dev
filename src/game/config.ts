@@ -21,9 +21,10 @@ export function createGame(parent: string): Phaser.Game {
     width: GAME.width,
     height: GAME.height,
     backgroundColor: GAME.backgroundColor,
-    // Nearest-фильтр сохраняет пиксельные текстуры; roundPixels убирает «дрожание» на дробных координатах.
+    // Nearest-фильтр сохраняет резкими пиксельные спрайты и bitmap-шрифты.
     pixelArt: true,
-    roundPixels: true,
+    smoothPixelArt: false,
+    roundPixels: false,
     // requestAnimationFrame синхронизирует отрисовку с обновлением экрана.
     fps: { target: GAME.targetFps, panicMax: 0, deltaHistory: GAME.frameHistory },
     scene: [BootScene, PreloadScene, MenuScene, BaseScene, ExpeditionScene, UIScene],

@@ -12,6 +12,9 @@ import type { Arena, Point } from '../types';
 import type { ResourceId } from '../configs/items';
 import type { UIScene } from './UIScene';
 
+const CAMERA_DEADZONE_WIDTH = 32;
+const CAMERA_DEADZONE_HEIGHT = 24;
+
 /** Предмет мира, с которым можно взаимодействовать клавишей E. */
 export interface Interactable {
   x: number; y: number; radius: number;
@@ -41,6 +44,7 @@ export abstract class WorldScene extends Phaser.Scene implements Arena {
   private holdTime = 0;
   private hitStopLeft = 0;
   private current: Interactable | null = null;
+  private readonly cameraTarget = { x: 0, y: 0 };
 
   protected initWorld(terrain: Terrain, mode: 'base' | 'expedition'): void {
     this.terrain = terrain;
@@ -76,7 +80,10 @@ export abstract class WorldScene extends Phaser.Scene implements Arena {
 
   protected createPlayer(x: number, y: number): Player {
     this.player = new Player(this, x, y, PLAYER_CHARACTERS[DEFAULT_PLAYER], this);
-    this.cameras.main.startFollow(this.player, true, 0.14, 0.14);
+    this.cameraTarget.x = Math.round(x);
+    this.cameraTarget.y = Math.round(y);
+    this.cameras.main.startFollow(this.cameraTarget, true, 1, 1);
+    this.cameras.main.setDeadzone(CAMERA_DEADZONE_WIDTH, CAMERA_DEADZONE_HEIGHT);
     this.cameras.main.centerOn(x, y);
     return this.player;
   }
@@ -103,17 +110,25 @@ export abstract class WorldScene extends Phaser.Scene implements Arena {
     if (this.ui.modalOpen || this.transitioning) {
       this.player.drain();
       this.fx.update(dt);
+      this.syncCameraTarget();
       return;
     }
     if (this.hitStopLeft > 0) {
       this.hitStopLeft -= delta;
       this.fx.update(dt);
+      this.syncCameraTarget();
       return;
     }
     this.player.tick(dt);
     this.tick(dt);
+    this.syncCameraTarget();
     this.updateInteract(dt);
     this.fx.update(dt);
+  }
+
+  private syncCameraTarget(): void {
+    this.cameraTarget.x = Math.round(this.player.x);
+    this.cameraTarget.y = Math.round(this.player.y);
   }
 
   /** Логика конкретной сцены каждый кадр. */

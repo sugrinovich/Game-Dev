@@ -44,7 +44,7 @@ export const PLAYER_WALK_ANIMATIONS: Record<PlayerDirection, string> = {
 export const PLAYER_IDLE_ANIMATIONS: Record<PlayerDirection, string> = {
   down: 'player-idle-down', left: 'player-idle-left', right: 'player-idle-right', up: 'player-idle-up',
 };
-export const PLAYER_WALK_SHEET = { frameSize: 64, columns: 8, frameRate: 10 } as const;
+export const PLAYER_WALK_SHEET = { frameSize: 64, columns: 8, frameRate: 14 } as const;
 export const PLAYER_IDLE_SHEET = { frameSize: 64, columns: 12, framesPerRow: [12, 12, 12, 4], frameRate: 6 } as const;
 /** Ноги персонажа на кадре 64x64 — точка, за которую его ставят на землю. */
 export const PLAYER_ORIGIN = { x: 0.5, y: 0.68 } as const;
