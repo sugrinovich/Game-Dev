@@ -1,30 +1,148 @@
 import Phaser from 'phaser';
 import type { EnemyConfig } from '../configs/characters';
-import { DEPTH } from '../configs/game';
-import type { Point } from '../types';
+import { COLORS, DEPTH } from '../configs/game';
+import { TEXTURES } from '../configs/assets';
+import { SETTINGS } from '../configs/settings';
+import { session } from '../state/Session';
+import type { Arena, Point } from '../types';
 
 const SPEED_VARIATION = { min: 0.9, max: 1.15 } as const;
 
-/** Общие размер и скорость; поведение движения задаёт конкретный моб. */
+export interface MobVariant { scale?: number; hpMul?: number }
+
+/** Общие здоровье, урон, отбрасывание и смерть; поведение движения задаёт конкретный моб. */
 export abstract class Mob extends Phaser.GameObjects.Sprite {
   readonly config: EnemyConfig;
+  hp: number;
+  maxHp: number;
+  dead = false;
   protected readonly speed: number;
+  protected readonly arena: Arena;
+  protected readonly baseScale: number;
+  protected contactCd = 0.5;
+  protected shadow: Phaser.GameObjects.Image | null = null;
+  protected showBar = true;
+  private knockX = 0;
+  private knockY = 0;
+  private barTimer = 0;
+  private bar: Phaser.GameObjects.Graphics | null = null;
+  private flashTimer = 0;
 
-  protected constructor(scene: Phaser.Scene, x: number, y: number, config: EnemyConfig) {
-    super(scene, x, y, config.texture);
+  protected constructor(scene: Phaser.Scene, x: number, y: number, config: EnemyConfig, arena: Arena, variant: MobVariant = {}) {
+    super(scene, x, y, config.texture, config.frame);
     this.config = config;
+    this.arena = arena;
+    this.maxHp = Math.max(1, Math.round(config.hp * (variant.hpMul ?? 1)));
+    this.hp = this.maxHp;
     // у каждого врага чуть своя скорость, чтобы толпа не шла идеальной кучей
     this.speed = config.speed * Phaser.Math.FloatBetween(SPEED_VARIATION.min, SPEED_VARIATION.max);
 
     scene.add.existing(this);
-    this.setDepth(DEPTH.enemies);
-    this.setDisplaySize(config.displaySize, config.displaySize);
+    const size = config.displaySize * (variant.scale ?? 1);
+    this.setDisplaySize(size, size);
+    this.baseScale = this.scaleX;
   }
 
+  /** Вызывается каждый кадр менеджером врагов. */
   chase(dt: number, target: Point): void {
+    if (this.dead) return;
+    this.contactCd = Math.max(0, this.contactCd - dt);
+    if (this.knockX !== 0 || this.knockY !== 0) {
+      this.arena.move(this, this.knockX * dt, this.knockY * dt, this.config.radius, this.config.flying);
+      const k = Math.max(0, 1 - 8 * dt);
+      this.knockX *= k; this.knockY *= k;
+      if (Math.hypot(this.knockX, this.knockY) < 5) { this.knockX = 0; this.knockY = 0; }
+    }
     this.move(dt, target);
   }
 
   protected abstract move(dt: number, target: Point): void;
 
+  /** Общий кадр: глубина, тень, полоска здоровья, вспышка. Вызывает менеджер после движения. */
+  syncVisuals(dt: number): void {
+    if (this.dead) return;
+    this.setDepth(this.y);
+    this.shadow?.setPosition(this.x, this.y + 1).setDepth(this.y - 0.5);
+    if (this.flashTimer > 0) {
+      this.flashTimer -= dt;
+      if (this.flashTimer <= 0) { this.clearTint(); this.setTintMode(Phaser.TintModes.MULTIPLY); }
+    }
+    if (this.barTimer > 0) {
+      this.barTimer -= dt;
+      this.drawBar();
+      if (this.barTimer <= 0) { this.bar?.destroy(); this.bar = null; }
+    }
+  }
+
+  private drawBar(): void {
+    if (!this.showBar) return;
+    if (!this.bar) this.bar = this.scene.add.graphics();
+    const w = Math.max(14, this.config.radius * 2 + 4);
+    const top = this.y - this.displayHeight * this.originY - 6;
+    const g = this.bar;
+    g.clear().setDepth(DEPTH.fx - 5);
+    g.fillStyle(0x1d1822, 1).fillRect(this.x - w / 2 - 1, top - 1, w + 2, 4);
+    g.fillStyle(0x6a2a3a, 1).fillRect(this.x - w / 2, top, w, 2);
+    g.fillStyle(0xe0506a, 1).fillRect(this.x - w / 2, top, Math.ceil(w * Math.max(0, this.hp) / this.maxHp), 2);
+  }
+
+  /** Урон от игрока. */
+  hurt(damage: number, fromX: number, fromY: number, knockback: number): void {
+    if (this.dead) return;
+    this.hp -= damage;
+    this.barTimer = 2.2;
+    this.flashTimer = 0.09;
+    this.setTint(0xffffff).setTintMode(Phaser.TintModes.FILL);
+    const dx = this.x - fromX, dy = this.y - fromY;
+    const l = Math.hypot(dx, dy) || 1;
+    const kb = knockback / Math.max(1, this.config.radius / 7);
+    this.knockX = (dx / l) * kb;
+    this.knockY = (dy / l) * kb;
+    this.arena.fx.hitSpark(this.x - dx / l * 2, this.y - 8);
+    this.arena.fx.floatText(this.x, this.y - this.displayHeight * this.originY * 0.7, `${damage}`, COLORS.gold);
+    this.arena.playSfx('hit');
+    this.onHurt();
+    if (this.hp <= 0) this.die();
+  }
+
+  protected onHurt(): void { /* переопределяется боссом */ }
+
+  protected die(): void {
+    if (this.dead) return;
+    this.dead = true;
+    this.bar?.destroy(); this.bar = null;
+    this.arena.fx.poof(this.x, this.y - 6, Math.max(1, this.baseScale));
+    this.arena.fx.burst({ x: this.x, y: this.y - 6, count: 10, speed: [30, 90], life: [0.3, 0.6], size: [2, 4], tints: this.deathTints(), gravity: 160, depth: this.y + 5 });
+    this.arena.playSfx('splat');
+    this.arena.shake(0.004, 100);
+    session.runKills += 1;
+    for (const d of this.config.drops) {
+      if (Math.random() <= d.chance) this.arena.dropLoot(this.x, this.y - 4, d.kind, Phaser.Math.Between(d.min, d.max));
+    }
+    this.emit('died', this);
+    this.shadow?.destroy();
+    this.destroy();
+  }
+
+  protected deathTints(): number[] { return [0xffffff]; }
+
+  /** Урон игроку при касании. */
+  protected touch(target: Point, damage = this.config.damage): void {
+    if (this.contactCd > 0) return;
+    const reach = this.config.radius + SETTINGS.player.radius + 1;
+    if (Math.hypot(target.x - this.x, target.y - this.y) <= reach) {
+      this.contactCd = 0.9;
+      this.arena.hurtPlayer(damage, this.x, this.y);
+    }
+  }
+
+  protected makeShadow(scale: number): void {
+    this.shadow = this.scene.add.image(this.x, this.y, TEXTURES.shadow).setScale(scale);
+  }
+
+  override destroy(fromScene?: boolean): void {
+    this.bar?.destroy();
+    this.shadow?.destroy();
+    super.destroy(fromScene);
+  }
 }

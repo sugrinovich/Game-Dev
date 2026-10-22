@@ -1,7 +1,14 @@
-/** Движение персонажей, появление и расталкивание мобов. */
+/** Движение персонажей, бой, появление мобов. Все числа — в пикселях внутреннего разрешения (480x270). */
 export const SETTINGS = {
-  player: { displaySize: 168, speed: 168, radius: 16 },
-  enemy: { speed: 80, radius: 14, separationRadius: 24 },
-  mobSpacing: { gap: 6, iterations: 12 },
-  spawn: { startCount: 3, intervalSeconds: 2.5, maxEnemies: 14, telegraphSeconds: 0.8, minDistanceFromPlayer: 220, maxDistanceFromPlayer: 520, edgeMargin: 30 },
+  player: { displaySize: 64, speed: 78, radius: 5 },
+  enemy: { speed: 36, radius: 6, separationRadius: 8 },
+  mobSpacing: { gap: 2, iterations: 8 },
+  /** Волны мобов в вылазке: дальше от игрока, чем виден экран. */
+  spawn: { intervalSeconds: 9, maxEnemies: 22, telegraphSeconds: 0.9, minDistanceFromPlayer: 170, maxDistanceFromPlayer: 280 },
+  combat: {
+    baseDamage: 2, attackCooldown: 0.42, attackRange: 26, attackHalfArc: 1.15, hitStopMs: 45,
+    iFrames: 0.9, dashSpeed: 210, dashTime: 0.17, dashCooldown: 1.2, knockback: 140,
+  },
+  base: { baseHp: 60, hpPerHut: 20, baseBackpack: 24, backpackPerStorage: 12, poulticeHeal: 35, poulticeMax: 5 },
+  expedition: { returnHoldSeconds: 1.3, deathLossShare: 0.5 },
 } as const;
