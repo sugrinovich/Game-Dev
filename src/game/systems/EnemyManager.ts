@@ -47,6 +47,8 @@ export class EnemyManager {
   /** Волны выключены (например, во время боя с боссом можно остановить). */
   wavesEnabled = true;
 
+  get activeCount(): number { return this.enemies.length + this.pending.length; }
+
   constructor(private readonly scene: Phaser.Scene, private readonly arena: Arena, private readonly opts: EnemyManagerOptions) {}
 
   /** Сразу ставит моба на карту (начальная расстановка, призыв босса). */

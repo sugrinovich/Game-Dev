@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
-import { PLAYER_IDLE_ANIMATIONS, SLIME_RUN_ANIMATIONS, TEXTURES } from '../configs/assets';
+import { PLAYER_IDLE_ANIMATIONS, TEXTURES } from '../configs/assets';
 import { COLORS, GAME, SCENES } from '../configs/game';
+import { paintCastleGround } from '../systems/CastleArt';
 import { Effects } from '../systems/Effects';
 import { audio } from '../systems/Sfx';
 import { session } from '../state/Session';
@@ -13,15 +14,13 @@ type Page = 'main' | 'confirm' | 'bye';
 const W = GAME.width;
 const H = GAME.height;
 
-/** Титульный экран: ночной лес, костёр, название и меню «Начать играть / Продолжить / Выйти». */
+/** Титульный экран: зал замка и меню «Начать играть / Продолжить / Выйти». */
 export class MenuScene extends Phaser.Scene {
   private page: Page = 'main';
   private items: Item[] = [];
   private sel = 0;
   private ui!: Phaser.GameObjects.Container;
   private fx!: Effects;
-  private flies: { img: Phaser.GameObjects.Image; a: number; b: number; r: number; x: number; y: number }[] = [];
-  private fogs: Phaser.GameObjects.Image[] = [];
   private emberT = 0;
   private busy = false;
 
@@ -47,49 +46,23 @@ export class MenuScene extends Phaser.Scene {
   private wake(): void { audio.init(); audio.music('calm'); }
 
   private buildBackdrop(): void {
-    this.add.image(0, 0, 'title_sky').setOrigin(0, 0);
-    const moonGlow = this.fx.glow(392, 58, 3.4, 0x9aa0e8, 0.35);
-    this.tweens.add({ targets: moonGlow, alpha: 0.5, duration: 3000, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
-    this.add.image(364, 30, 'title_moon').setOrigin(0, 0);
-    // мерцающие звёзды
-    for (let i = 0; i < 18; i++) {
-      const s = this.add.image(Phaser.Math.Between(4, W - 4), Phaser.Math.Between(4, 120), TEXTURES.px).setTint(0xfff0ce).setAlpha(0.2);
-      this.tweens.add({ targets: s, alpha: 1, duration: Phaser.Math.Between(700, 1800), yoyo: true, repeat: -1, delay: Phaser.Math.Between(0, 1500) });
+    paintCastleGround(this, 'menu-castle', W, H, 'hall');
+    this.add.image(0, 0, 'menu-castle').setOrigin(0, 0);
+    for (const x of [42, 130, 350, 438]) {
+      this.add.image(x, 142, 'castle_pillar').setOrigin(0.5, 1);
+      this.add.image(x, 60, 'castle_banner').setOrigin(0.5, 1);
     }
-    this.add.image(0, 0, 'title_hills').setOrigin(0, 0);
-    this.add.image(0, 0, 'title_forest_far').setOrigin(0, 0);
-    // туман
-    for (let i = 0; i < 4; i++) {
-      const f = this.add.image(Phaser.Math.Between(0, W), 180 + i * 10, TEXTURES.glow).setTint(0x8a7ab8).setAlpha(0.12).setScale(7, 1.1).setBlendMode(Phaser.BlendModes.ADD);
-      this.fogs.push(f);
+    for (const x of [82, 398]) {
+      this.add.image(x, 232, 'castle_brazier').setOrigin(0.5, 1).setScale(1.2);
+      const glow = this.fx.glow(x, 205, 4, 0xffac56, 0.35);
+      this.tweens.add({ targets: glow, alpha: 0.23, duration: 650, yoyo: true, repeat: -1 });
     }
-    this.add.image(0, 0, 'title_forest_near').setOrigin(0, 0);
-    this.add.image(0, H - 62, 'title_ground').setOrigin(0, 0);
-
-    // костёр, герой и слизень
-    const fy = 236;
-    this.add.image(300, fy + 2, TEXTURES.shadow).setScale(2.4, 1.1);
-    const glow = this.fx.glow(300, fy - 14, 6.5, 0xff9a3a, 0.5);
-    this.tweens.add({ targets: glow, alpha: 0.35, scale: 6, duration: 240, yoyo: true, repeat: -1 });
-    this.add.sprite(300, fy, TEXTURES.sprites, 'campfire_0').setOrigin(0.5, 0.9).play('campfire');
-    this.add.image(258, fy + 4, TEXTURES.shadow).setScale(0.8);
-    this.add.sprite(258, fy + 2, TEXTURES.playerIdle).setOrigin(0.5, 0.68).play(PLAYER_IDLE_ANIMATIONS.right);
-    this.add.image(344, fy + 6, TEXTURES.shadow).setScale(0.7);
-    this.add.sprite(344, fy + 4, TEXTURES.slimeRun).setOrigin(0.5, 0.625).play(SLIME_RUN_ANIMATIONS.left);
-    const torchL = this.add.sprite(40, 250, TEXTURES.sprites, 'torch_0').setOrigin(0.5, 0.95).play('torch');
-    this.fx.glow(torchL.x, torchL.y - 26, 3, 0xff9a3a, 0.35);
-    const torchR = this.add.sprite(440, 250, TEXTURES.sprites, 'torch_1').setOrigin(0.5, 0.95).play('torch');
-    this.fx.glow(torchR.x, torchR.y - 26, 3, 0xff9a3a, 0.35);
-    // светлячки
-    for (let i = 0; i < 16; i++) {
-      const img = this.add.image(0, 0, TEXTURES.glow).setTint(0xd8ff7a).setBlendMode(Phaser.BlendModes.ADD).setScale(0.18);
-      this.flies.push({ img, a: Math.random() * 6, b: Math.random() * 6, r: Phaser.Math.Between(10, 30), x: Phaser.Math.Between(20, W - 20), y: Phaser.Math.Between(150, 245) });
-    }
-    this.add.image(0, 0, 'title_vignette').setOrigin(0, 0).setDepth(40);
+    this.add.sprite(240, 234, TEXTURES.playerIdle).setOrigin(0.5, 0.68).play(PLAYER_IDLE_ANIMATIONS.down);
+    this.add.image(0, 0, 'title_vignette').setOrigin(0, 0).setDepth(20).setAlpha(0.7);
   }
 
   private buildLogo(): void {
-    const t = new PText(this, W / 2, 40, GAME.title, { font: 'big', ax: 0.5, ay: 0.5, color: COLORS.gold, scale: 3 }).setDepth(30);
+    const t = new PText(this, W / 2, 40, GAME.title, { font: 'big', ax: 0.5, ay: 0.5, color: COLORS.gold, scale: 2 }).setDepth(30);
     this.tweens.add({ targets: t, y: 43, duration: 2200, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
     const g = this.add.graphics().setDepth(30);
     g.fillStyle(0xa07c4c, 1).fillRect(W / 2 - 110, 70, 100, 1).fillRect(W / 2 + 10, 70, 100, 1);
@@ -140,7 +113,7 @@ export class MenuScene extends Phaser.Scene {
       const on = i === this.sel;
       if (on) {
         const ry = (hl as unknown as { _y: number })._y;
-        hl.fillStyle(0x4a3a50, 1).fillRect(px - 2, ry, bw + 4, rowH - 2).fillStyle(0x6a5a70, 1).fillRect(px - 2, ry, bw + 4, 1);
+        hl.fillStyle(COLORS.panelLight, 1).fillRect(px - 2, ry, bw + 4, rowH - 2).fillStyle(0x8a795c, 1).fillRect(px - 2, ry, bw + 4, 1);
       }
       label.setText(on ? `▶ ${it.label} ◀` : it.label).setColor(!it.enabled ? COLORS.dim : on ? 0xffffff : COLORS.text);
     });
@@ -189,7 +162,7 @@ export class MenuScene extends Phaser.Scene {
     this.cameras.main.once(Phaser.Cameras.Scene2D.Events.FADE_OUT_COMPLETE, () => {
       this.ui.removeAll(true);
       this.add.rectangle(0, 0, W, H, 0x0b0919, 1).setOrigin(0, 0).setDepth(200);
-      new PText(this, W / 2, H / 2 - 12, 'До встречи у костра!', { font: 'big', ax: 0.5, ay: 0.5, color: COLORS.gold }).setDepth(201);
+      new PText(this, W / 2, H / 2 - 12, 'До встречи в замке!', { font: 'big', ax: 0.5, ay: 0.5, color: COLORS.gold }).setDepth(201);
       new PText(this, W / 2, H / 2 + 14, 'Вкладку можно закрывать.', { ax: 0.5, color: COLORS.dim }).setDepth(201);
       this.cameras.main.fadeIn(600, 0, 0, 0);
       audio.music('off');
@@ -226,17 +199,11 @@ export class MenuScene extends Phaser.Scene {
 
   override update(_t: number, delta: number): void {
     const dt = delta / 1000;
-    const now = this.time.now / 1000;
     this.fx.update(dt);
-    for (const f of this.flies) {
-      f.a += dt * 0.7; f.b += dt * 0.5;
-      f.img.setPosition(f.x + Math.sin(f.a) * f.r, f.y + Math.cos(f.b) * f.r * 0.6).setAlpha(0.35 + 0.65 * Math.abs(Math.sin(now * 1.6 + f.a)));
-    }
-    this.fogs.forEach((fg, i) => { fg.x += dt * (4 + i * 2); if (fg.x > W + 160) fg.x = -160; });
     this.emberT -= dt;
     if (this.emberT <= 0) {
       this.emberT = 0.07;
-      this.fx.burst({ x: 300 + Phaser.Math.Between(-5, 5), y: 224, count: 1, speed: [6, 18], angle: [-Math.PI * 0.65, -Math.PI * 0.35], life: [0.9, 1.8], size: [1, 2], tints: [0xffc24a, 0xf58a2a, 0xffeaa0], gravity: -14, blend: Phaser.BlendModes.ADD, depth: 20 });
+      this.fx.burst({ x: (Math.random() < 0.5 ? 82 : 398) + Phaser.Math.Between(-5, 5), y: 205, count: 1, speed: [6, 18], angle: [-Math.PI * 0.65, -Math.PI * 0.35], life: [0.9, 1.8], size: [1, 2], tints: [0xffc24a, 0xf58a2a, 0xffeaa0], gravity: -14, blend: Phaser.BlendModes.ADD, depth: 20 });
     }
   }
 }

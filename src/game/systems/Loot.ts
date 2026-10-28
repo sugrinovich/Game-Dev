@@ -44,7 +44,7 @@ export class LootManager {
       const dist = Math.hypot(dx, dy);
       const room = session.carryCount < session.capacity;
       if (d.age > 0.4 && player.alive) {
-        if (dist < 48 && room) {
+        if (dist >= 11 && dist < 48 && room) {
           const pull = 150 + (48 - dist) * 4;
           d.x += (dx / dist) * pull * dt; d.y += (dy / dist) * pull * dt;
         }

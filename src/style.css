@@ -1,6 +1,6 @@
 :root {
   color: #fff0ce;
-  background: #17131c;
+  background: #10151e;
 }
 
 * {
@@ -17,6 +17,7 @@ body,
 
 body {
   overflow: hidden;
+  background: radial-gradient(ellipse at center, #29313e, #0a0e16 75%);
 }
 
 #app {

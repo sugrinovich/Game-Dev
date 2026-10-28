@@ -14,6 +14,8 @@ interface NodeDef {
 
 /** Что можно добыть ударом дубины. Ключ — имя кадра в атласе. */
 export const NODE_DEFS: Record<string, NodeDef> = {
+  castle_crate: { hp: 4, collider: 8, reach: 12, kind: 'bush', drop: [{ res: 'wood', min: 4, max: 6 }], chips: [0xb58655, 0x72513c], shadow: 1 },
+  castle_supplies: { hp: 2, collider: 5, reach: 10, kind: 'bush', drop: [{ res: 'fiber', min: 3, max: 5 }, { res: 'berries', min: 2, max: 3 }], chips: [0xd5b16a, 0x829269], shadow: 0.8 },
   tree_oak_a: { hp: 8, collider: 5, reach: 9, kind: 'tree', drop: [{ res: 'wood', min: 2, max: 3 }], chips: [0x9a6c46, 0x56924a, 0x82b95a], shadow: 1.7 },
   tree_oak_b: { hp: 8, collider: 5, reach: 9, kind: 'tree', drop: [{ res: 'wood', min: 2, max: 3 }], chips: [0x9a6c46, 0x56924a, 0x82b95a], shadow: 1.7 },
   tree_oak_c: { hp: 7, collider: 5, reach: 9, kind: 'tree', drop: [{ res: 'wood', min: 2, max: 3 }], chips: [0x9a6c46, 0x56924a, 0x82b95a], shadow: 1.5 },
@@ -39,7 +41,7 @@ export class ResourceNode {
     readonly frame: string, readonly x: number, readonly y: number, readonly def: NodeDef) {
     this.hp = def.hp;
     this.shadow = scene.add.image(x, y + 1, TEXTURES.shadow).setScale(def.shadow).setDepth(y - 0.7);
-    this.sprite = scene.add.sprite(x, y, TEXTURES.sprites, frame).setDepth(y);
+    this.sprite = (frame.startsWith('castle_') ? scene.add.sprite(x, y, frame).setOrigin(0.5, 1) : scene.add.sprite(x, y, TEXTURES.sprites, frame)).setDepth(y);
     if (frame === 'mushroom_glow_0') this.sprite.play('glow-mushroom');
     if (def.collider > 0) this.collider = colliders.add(x, y, def.collider);
   }

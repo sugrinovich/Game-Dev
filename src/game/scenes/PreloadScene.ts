@@ -7,13 +7,14 @@ import { COLORS, GAME, SCENES } from '../configs/game';
 import { makeUtilityTextures } from '../systems/Effects';
 import { PText } from '../ui/PText';
 import { drawPanel } from '../ui/Panel';
+import { makeCastleTextures } from '../systems/CastleArt';
 
 const TIPS = [
-  'Бейте по деревьям и камням дубиной — так добывают ресурсы.',
-  'Рюкзак ограничен: вернитесь к обелиску, пока он не заполнился.',
+  'Торговец внизу зала продаёт снаряжение за монеты.',
+  'I — инвентарь. Купленные предметы нужно экипировать.',
   'Рывок (SHIFT) даёт мгновение неуязвимости.',
-  'Огород созревает после каждой вылазки.',
-  'Король слизней прячется в глубине Лощины.',
+  'Победите все волны и босса, чтобы открыть следующую арену.',
+  'Монеты сохраняются даже при поражении.',
 ];
 
 /** Экран загрузки: название игры, полоса прогресса и подсказка. Заодно создаёт все анимации. */
@@ -30,7 +31,7 @@ export class PreloadScene extends Phaser.Scene {
       const k = y / H;
       g.fillStyle(Phaser.Display.Color.GetColor(Math.round(14 + 26 * k), Math.round(11 + 18 * k), Math.round(26 + 34 * k)), 1).fillRect(0, y, W, 3);
     }
-    const title = new PText(this, W / 2, 78, GAME.title, { font: 'big', ax: 0.5, ay: 0.5, color: COLORS.gold, scale: 3 });
+    const title = new PText(this, W / 2, 78, GAME.title, { font: 'big', ax: 0.5, ay: 0.5, color: COLORS.gold, scale: 2 });
     new PText(this, W / 2, 112, GAME.subtitle, { ax: 0.5, color: COLORS.dim });
     this.tweens.add({ targets: title, y: 74, duration: 1400, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
 
@@ -65,6 +66,7 @@ export class PreloadScene extends Phaser.Scene {
 
   create(): void {
     makeUtilityTextures(this);
+    makeCastleTextures(this);
     this.createAnimations();
     // чтобы экран загрузки успевали прочитать, даже когда всё загрузилось мгновенно
     this.time.delayedCall(900, () => {

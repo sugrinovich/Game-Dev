@@ -52,6 +52,7 @@ export abstract class WorldScene extends Phaser.Scene implements Arena {
     this.mapH = terrain.spec.height;
     this.transitioning = false;
     this.interactables.length = 0;
+    this.colliders.clear();
     this.holdTime = 0;
     this.hitStopLeft = 0;
     this.current = null;
@@ -90,7 +91,7 @@ export abstract class WorldScene extends Phaser.Scene implements Arena {
 
   /** Картинка из атласа, поставленная «ногами» в точку (x, y); глубина — по Y. */
   protected prop(frame: string, x: number, y: number): Phaser.GameObjects.Image {
-    const img = this.add.image(x, y, TEXTURES.sprites, frame);
+    const img = frame.startsWith('castle_') ? this.add.image(x, y, frame) : this.add.image(x, y, TEXTURES.sprites, frame);
     if (img.frame.customPivot) img.setOrigin(img.frame.pivotX, img.frame.pivotY); else img.setOrigin(0.5, 1);
     return img.setDepth(y);
   }

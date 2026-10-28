@@ -57,6 +57,7 @@ export interface TerrainSpec {
   width: number; height: number; seed: number; theme: Theme;
   ponds?: Ellipse[]; paths?: PathSpec[]; clearings?: Ellipse[]; plazas?: Ellipse[];
   rune?: { x: number; y: number; r: number };
+  bounds?: { side: number; top: number; bottom: number };
 }
 
 const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
@@ -103,6 +104,8 @@ export class Terrain {
   }
 
   isBlocked(x: number, y: number): boolean {
+    const b = this.spec.bounds;
+    if (b && (x < b.side || x > this.spec.width - b.side || y < b.top || y > this.spec.height - b.bottom)) return true;
     if (x < 4 || y < 4 || x > this.spec.width - 4 || y > this.spec.height - 4) return true;
     return this.water(x, y) > 0.06;
   }

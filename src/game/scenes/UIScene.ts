@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { COLORS, DEPTH, GAME, SCENES } from '../configs/game';
 import { TEXTURES } from '../configs/assets';
-import { RESOURCES, RESOURCE_INFO, type Cost, type ResourceId } from '../configs/items';
+import { EQUIPMENT_IDS, RESOURCES, RESOURCE_INFO, SHOP_ITEMS, type Cost, type ResourceId, type ShopItemId } from '../configs/items';
 import { SETTINGS } from '../configs/settings';
 import { audio } from '../systems/Sfx';
 import { session } from '../state/Session';
@@ -11,6 +11,7 @@ import type { WorldScene } from './WorldScene';
 
 export interface ChoiceOption {
   label: string;
+  icon?: string;
   desc?: string;
   cost?: Cost;
   enabled?: boolean;
@@ -43,6 +44,7 @@ export class UIScene extends Phaser.Scene {
   private packText!: PText;
   private packIcon!: Phaser.GameObjects.Image;
   private potionText!: PText;
+  private coinText!: PText;
   private dashG!: Phaser.GameObjects.Graphics;
   private objective!: PText;
   private objectivePlate!: Phaser.GameObjects.Graphics;
@@ -71,6 +73,8 @@ export class UIScene extends Phaser.Scene {
   get modalOpen(): boolean { return this.modal !== null || this.time.now - this.closedAt < 180; }
 
   create(): void {
+    this.resList = []; this.carryList = []; this.toasts = [];
+    this.modal = null; this.minimap = null; this.miniImg = null; this.bannerText = null;
     this.cameras.main.setRoundPixels(true);
     this.hud = this.add.container(0, 0);
     // здоровье
@@ -81,11 +85,17 @@ export class UIScene extends Phaser.Scene {
     this.packText = new PText(this, 24, 23, '');
     const potion = this.add.image(4, 37, TEXTURES.sprites, 'icon_poultice').setOrigin(0, 0);
     this.potionText = new PText(this, 24, 40, '');
+    this.add.image(4, 55, 'castle_coin').setOrigin(0, 0);
+    this.coinText = new PText(this, 24, 58, '', { color: COLORS.gold });
+    const inventoryButton = new PText(this, W - 8, H - 17, '[I] Инвентарь', { ax: 1, color: COLORS.gold });
+    const inventoryZone = this.add.zone(W - 108, H - 22, 104, 22).setOrigin(0, 0).setInteractive({ useHandCursor: true });
+    inventoryZone.on('pointerdown', () => { if (!this.modal && this.world?.player.alive && !this.world.transitioning) this.openInventory(); });
+    inventoryButton.setDepth(1);
     this.dashG = this.add.graphics();
     this.add.image(4, H - 20, TEXTURES.sprites, 'icon_dash').setOrigin(0, 0);
     this.objectivePlate = this.add.graphics();
     this.objective = new PText(this, W / 2, 21, '', { ax: 0.5, color: COLORS.gold });
-    this.hint = new PText(this, W / 2, H - 4, 'WASD — ходьба   ПРОБЕЛ / ЛКМ — удар   SHIFT — рывок\nE — действие   Q — припарка   ESC — меню   M — звук', { ax: 0.5, ay: 1, color: COLORS.dim });
+    this.hint = new PText(this, W / 2, H - 28, 'WASD — ходьба   ПРОБЕЛ / ЛКМ — удар   SHIFT — рывок\nE — действие   Q — эликсир   ESC — меню   M — звук', { ax: 0.5, ay: 1, color: COLORS.dim });
     this.bossG = this.add.graphics();
     this.bossName = new PText(this, W / 2, H - 59, '', { ax: 0.5, color: COLORS.bad });
     this.miniG = this.add.graphics();
@@ -106,10 +116,14 @@ export class UIScene extends Phaser.Scene {
     kb?.on('keydown', (ev: KeyboardEvent) => this.onKey(ev));
     this.input.once('pointerdown', () => audio.init());
     kb?.once('keydown', () => audio.init());
-    this.game.events.on(Phaser.Core.Events.BLUR, () => {
+    const onBlur = (): void => {
       if (this.world && this.mode === 'expedition' && !this.modal) this.openPause();
+    };
+    this.game.events.on(Phaser.Core.Events.BLUR, onBlur);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.world = null; this.ready = false;
+      kb?.off('keydown'); this.game.events.off(Phaser.Core.Events.BLUR, onBlur);
     });
-    this.events.on(Phaser.Scenes.Events.SHUTDOWN, () => { this.world = null; this.ready = false; });
     this.ready = true;
   }
 
@@ -138,7 +152,7 @@ export class UIScene extends Phaser.Scene {
   setMinimap(spec: MinimapSpec | null): void {
     this.minimap = spec;
     this.miniImg?.destroy(); this.miniImg = null;
-    if (spec) this.miniImg = this.add.image(W - 4 - spec.w, 4, spec.key).setOrigin(0, 0);
+    if (spec) this.miniImg = this.add.image(W - 4 - spec.w, 4, spec.key).setOrigin(0, 0).setDisplaySize(spec.w, spec.h);
   }
 
   setBoss(name: string | null, frac = 1): void {
@@ -157,7 +171,7 @@ export class UIScene extends Phaser.Scene {
     const ex = this.toasts.find((t) => t.kind === kind && t.timer > 0.4);
     if (ex) { ex.count += n; ex.timer = 2.4; ex.text.setText(n ? `+${ex.count} ${ex.label}` : ex.label); return; }
     const t = new PText(this, 24, 0, n ? `+${n} ${label}` : label, { color: COLORS.text });
-    const img = icon ? this.add.image(6, 0, TEXTURES.sprites, icon).setOrigin(0, 0.5).setScale(0.8) : null;
+    const img = icon ? (icon.startsWith('castle_') ? this.add.image(6, 0, icon) : this.add.image(6, 0, TEXTURES.sprites, icon)).setOrigin(0, 0.5).setScale(0.8) : null;
     this.toasts.push({ kind, count: n, text: t, icon: img, timer: 2.4, label });
   }
 
@@ -193,6 +207,7 @@ export class UIScene extends Phaser.Scene {
       this.packText.setText(`${session.carryCount}/${session.capacity}`).setColor(full ? COLORS.bad : COLORS.text);
     }
     this.potionText.setText(`Q ×${session.data.poultice}`).setColor(session.data.poultice > 0 ? COLORS.text : COLORS.dim);
+    this.coinText.setText(`${session.data.coins}`);
     // рывок
     const cd = w.player.dashCd / SETTINGS.combat.dashCooldown;
     this.dashG.clear();
@@ -272,9 +287,10 @@ export class UIScene extends Phaser.Scene {
       if (ev.code === 'ArrowUp' || ev.code === 'KeyW') { this.select((m.sel + n - 1) % n); }
       else if (ev.code === 'ArrowDown' || ev.code === 'KeyS') { this.select((m.sel + 1) % n); }
       else if (ev.code === 'Enter' || ev.code === 'Space' || ev.code === 'KeyE') { this.choose(m.sel); }
-      else if (ev.code === 'Escape' || (ev.code === 'KeyP' && m.spec.title === 'Пауза')) { if (m.spec.closable !== false) { this.close(); } }
+      else if (ev.code === 'Escape' || (ev.code === 'KeyI' && m.spec.title === 'Инвентарь') || (ev.code === 'KeyP' && m.spec.title === 'Пауза')) { if (m.spec.closable !== false) { this.close(); } }
       return;
     }
+    if (ev.code === 'KeyI' && this.world?.player.alive && !this.world.transitioning) { this.openInventory(); return; }
     if ((ev.code === 'Escape' || ev.code === 'KeyP') && this.world && !this.world.transitioning && this.world.player?.alive) this.openPause();
   }
 
@@ -348,12 +364,13 @@ export class UIScene extends Phaser.Scene {
       const on = o.enabled !== false;
       if (i === m.sel) {
         const hl = this.add.graphics();
-        hl.fillStyle(0x4a3a50, 1).fillRect(px + 8, ry, pw - 16, rowH - 2);
-        hl.fillStyle(0x6a5a70, 1).fillRect(px + 8, ry, pw - 16, 1);
+        hl.fillStyle(COLORS.panelLight, 1).fillRect(px + 8, ry, pw - 16, rowH - 2);
+        hl.fillStyle(0x8a795c, 1).fillRect(px + 8, ry, pw - 16, 1);
         box.add(hl);
         box.add(new PText(this, px + 11, ry + 4, '▶', { color: COLORS.gold }));
       }
-      box.add(new PText(this, px + 24, ry + 4, o.label, { color: on ? (i === m.sel ? 0xffffff : COLORS.text) : COLORS.dim }));
+      if (o.icon) box.add(this.add.image(px + 29, ry + 9, o.icon).setScale(0.85));
+      box.add(new PText(this, px + (o.icon ? 43 : 24), ry + 4, o.label, { color: on ? (i === m.sel ? 0xffffff : COLORS.text) : COLORS.dim }));
       if (o.cost) addCostRow(this, box, px + pw - 12 - costWidth(o.cost), ry + 3, o.cost, on);
       const zone = this.add.zone(px + 8, ry, pw - 16, rowH - 2).setOrigin(0, 0).setInteractive({ useHandCursor: true });
       zone.on('pointerover', () => this.select(i));
@@ -367,6 +384,47 @@ export class UIScene extends Phaser.Scene {
   }
 
   // ---------------- меню паузы ----------------
+  openShop(): void {
+    const ids: ShopItemId[] = [...EQUIPMENT_IDS, 'potion'];
+    this.openChoice({
+      title: 'Лавка снабженца', width: 350,
+      lines: [`Ваш кошелёк: ${session.data.coins} монет`, 'Покупки попадают в инвентарь. Экипировка — I.'],
+      options: [
+        ...ids.map((id): ChoiceOption => ({
+          label: `${SHOP_ITEMS[id].name} · ${id !== 'potion' && session.data.inventory[id] ? 'куплено' : `${SHOP_ITEMS[id].price} мон.`}`,
+          icon: SHOP_ITEMS[id].icon, desc: SHOP_ITEMS[id].description,
+          enabled: session.canBuy(id),
+          onChoose: () => {
+            if (session.buy(id)) { audio.play('pickup'); this.message('Предмет в инвентаре', SHOP_ITEMS[id].icon); }
+            this.openShop();
+          },
+        })),
+        { label: 'Открыть инвентарь', onChoose: () => this.openInventory() },
+        { label: 'Закрыть', onChoose: () => undefined },
+      ],
+    });
+  }
+
+  openInventory(): void {
+    this.openChoice({
+      title: 'Инвентарь', width: 350,
+      lines: [`Урон: ${session.damage} · здоровье: ${Math.ceil(session.hp)}/${session.maxHp} · рюкзак: ${session.capacity}`,
+        `Монеты: ${session.data.coins} · эликсиры: ${session.data.poultice}/${SETTINGS.base.poulticeMax} (Q)`],
+      options: [
+        ...EQUIPMENT_IDS.map((id): ChoiceOption => ({
+          label: `${SHOP_ITEMS[id].name} · ${!session.data.inventory[id] ? 'нет' : session.data.equipped[id] ? 'надето' : 'в сумке'}`,
+          icon: SHOP_ITEMS[id].icon, enabled: session.data.inventory[id],
+          desc: `${SHOP_ITEMS[id].description} ${session.data.inventory[id] ? 'Enter / клик — надеть или снять.' : 'Продаётся у торговца в замке.'}`,
+          onChoose: () => {
+            if (!session.toggleEquipment(id)) this.message('Сначала освободите рюкзак');
+            this.openInventory();
+          },
+        })),
+        { label: 'Закрыть', onChoose: () => undefined },
+      ],
+    });
+  }
+
   openPause(): void {
     const w = this.world as (WorldScene & { abandonRun?: () => void; goMenu?: () => void }) | null;
     if (!w) return;
@@ -375,9 +433,9 @@ export class UIScene extends Phaser.Scene {
       { label: audio.muted ? 'Звук: выключен' : 'Звук: включён', onChoose: () => { audio.toggleMute(); this.openPause(); return true; } },
     ];
     if (this.mode === 'expedition' && w.abandonRun) {
-      options.push({ label: 'Вернуться в лагерь', desc: 'Часть добычи останется в лесу.', onChoose: () => { this.confirm('Бросить вылазку?', ['Вы потеряете половину добычи из рюкзака.'], () => w.abandonRun?.()); return true; } });
+      options.push({ label: 'Вернуться в замок', desc: 'Половина ресурсов потеряется. Монеты останутся.', onChoose: () => { this.confirm('Покинуть арену?', ['Вы потеряете половину добычи из рюкзака.'], () => w.abandonRun?.()); return true; } });
     }
-    options.push({ label: 'В главное меню', desc: 'Лагерь сохранится. Добыча из рюкзака пропадёт.', onChoose: () => { this.confirm('Выйти в меню?', ['Прогресс лагеря сохранён.', this.mode === 'expedition' ? 'Добыча из рюкзака будет потеряна.' : ''].filter(Boolean), () => w.goMenu?.()); return true; } });
+    options.push({ label: 'В главное меню', desc: 'Замок сохранится. Добыча из рюкзака пропадёт.', onChoose: () => { this.confirm('Выйти в меню?', ['Прогресс замка и монеты сохранены.', this.mode === 'expedition' ? 'Добыча из рюкзака будет потеряна.' : ''].filter(Boolean), () => w.goMenu?.()); return true; } });
     this.openChoice({ title: 'Пауза', options, width: 250 });
   }
 

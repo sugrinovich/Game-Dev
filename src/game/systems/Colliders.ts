@@ -10,6 +10,8 @@ const key = (cx: number, cy: number): number => (cx + 64) * 4096 + (cy + 64);
 export class Colliders {
   private readonly cells = new Map<number, Circle[]>();
 
+  clear(): void { this.cells.clear(); }
+
   add(x: number, y: number, r: number): Circle {
     const c = { x, y, r };
     const x0 = Math.floor((x - r) / CELL), x1 = Math.floor((x + r) / CELL);
@@ -52,8 +54,9 @@ export class Colliders {
 export function moveCircle(e: Point, dx: number, dy: number, r: number, flying: boolean, colliders: Colliders, terrain: Terrain): boolean {
   const W = terrain.spec.width, H = terrain.spec.height;
   if (flying) {
-    e.x = Math.min(W - 6, Math.max(6, e.x + dx));
-    e.y = Math.min(H - 6, Math.max(6, e.y + dy));
+    const b = terrain.spec.bounds;
+    e.x = Math.min(W - (b?.side ?? 6), Math.max(b?.side ?? 6, e.x + dx));
+    e.y = Math.min(H - (b?.bottom ?? 6), Math.max(b?.top ?? 6, e.y + dy));
     return false;
   }
   const blockedAt = (x: number, y: number): boolean =>

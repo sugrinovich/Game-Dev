@@ -7,18 +7,18 @@ import { PText } from './PText';
 
 /** Рамка в пиксельном стиле: тёмный контур, золотистая кромка, срезанные углы. */
 export function drawPanel(g: Phaser.GameObjects.Graphics, x: number, y: number, w: number, h: number, fill: number = COLORS.panel): void {
-  g.fillStyle(0x1d1822, 1).fillRect(x + 1, y, w - 2, h).fillRect(x, y + 1, w, h - 2);
+  g.fillStyle(0x151b27, 1).fillRect(x + 1, y, w - 2, h).fillRect(x, y + 1, w, h - 2);
   g.fillStyle(0xa07c4c, 1).fillRect(x + 2, y + 1, w - 4, h - 2).fillRect(x + 1, y + 2, w - 2, h - 4);
   g.fillStyle(0xd9b878, 1).fillRect(x + 3, y + 2, w - 6, 1).fillRect(x + 2, y + 3, 1, h - 6);
   g.fillStyle(0x6b4f3a, 1).fillRect(x + 3, y + h - 3, w - 6, 1).fillRect(x + w - 3, y + 3, 1, h - 6);
   g.fillStyle(fill, 1).fillRect(x + 4, y + 3, w - 8, h - 6);
-  g.fillStyle(0x3a2d44, 1).fillRect(x + 4, y + 3, w - 8, 1);
+  g.fillStyle(0x394354, 1).fillRect(x + 4, y + 3, w - 8, 1);
 }
 
 /** Маленькая плашка для HUD. */
 export function drawPlate(g: Phaser.GameObjects.Graphics, x: number, y: number, w: number, h: number, alpha = 0.72): void {
-  g.fillStyle(0x1d1822, alpha).fillRect(x + 1, y, w - 2, h).fillRect(x, y + 1, w, h - 2);
-  g.fillStyle(0x4a3a50, alpha).fillRect(x + 1, y + 1, w - 2, 1);
+  g.fillStyle(0x151b27, alpha).fillRect(x + 1, y, w - 2, h).fillRect(x, y + 1, w, h - 2);
+  g.fillStyle(COLORS.panelLight, alpha).fillRect(x + 1, y + 1, w - 2, 1);
 }
 
 /** Ряд «значок + число» для стоимости. Возвращает ширину ряда. Отрисовка слева направо от x. */
