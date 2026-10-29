@@ -1,9 +1,8 @@
 import Phaser from 'phaser';
 import type { Mob, MobVariant } from '../characters/Mob';
-import { Slime } from '../characters/Slime';
-import { Sporeling } from '../characters/Sporeling';
-import { Wasp } from '../characters/Wasp';
-import { SlimeKing } from '../characters/SlimeKing';
+import { AbyssKing } from '../characters/AbyssKing';
+import { Ogre, Orc } from '../characters/Brute';
+import { SkeletonArcher, SkeletonWarrior } from '../characters/Skeleton';
 import type { EnemyTypeId } from '../configs/characters';
 import { SETTINGS } from '../configs/settings';
 import type { Arena, Point } from '../types';
@@ -11,7 +10,7 @@ import type { Arena, Point } from '../types';
 const MAX_MOVEMENT_STEP_SECONDS = 1 / 60;
 const SEPARATION_TOLERANCE = 0.1;
 
-const MOB_CLASSES = { slime: Slime, sporeling: Sporeling, wasp: Wasp, king: SlimeKing } satisfies Record<EnemyTypeId,
+const MOB_CLASSES = { skeleton: SkeletonWarrior, archer: SkeletonArcher, orc: Orc, ogre: Ogre, king: AbyssKing } satisfies Record<EnemyTypeId,
   new (scene: Phaser.Scene, x: number, y: number, arena: Arena, variant?: MobVariant) => Mob>;
 
 /** Задержка появления врага: на земле виден круг-предупреждение. */
@@ -20,12 +19,16 @@ interface PendingSpawn {
   y: number;
   type: EnemyTypeId;
   timeLeft: number;
+  variant?: MobVariant;
 }
+
+/** Призванные Королём Бездны скелеты слабее обычных. */
+const SUMMON_VARIANT: MobVariant = { hpMul: 0.6 };
 
 export interface EnemyManagerOptions {
   width: number;
   height: number;
-  /** Можно ли поставить моба в эту точку (не вода, не дерево). */
+  /** Можно ли поставить моба в эту точку (не за стеной, не в колонне). */
   isFree: (x: number, y: number) => boolean;
   /** Какого моба позвать волной в этой точке карты. */
   pickType: (x: number, y: number) => EnemyTypeId;
@@ -60,8 +63,8 @@ export class EnemyManager {
       if (i >= 0) this.enemies.splice(i, 1);
       this.onDied?.(mob);
     });
-    if (mob instanceof SlimeKing) {
-      mob.on('summon', (sx: number, sy: number) => this.queueSpawnAt('slime', sx, sy, 0.7));
+    if (mob instanceof AbyssKing) {
+      mob.on('summon', (sx: number, sy: number) => this.queueSpawnAt('skeleton', sx, sy, SUMMON_VARIANT));
       mob.on('phase', (msg: string) => this.onPhase?.(msg));
     }
     this.enemies.push(mob);
@@ -106,12 +109,10 @@ export class EnemyManager {
     }
   }
 
-  private queueSpawnAt(type: EnemyTypeId, x: number, y: number, scale?: number): void {
-    this.arena.fx.ring(x, y, 12, 0x63c99f, this.config.telegraphSeconds);
-    this.pending.push({ x, y, type, timeLeft: this.config.telegraphSeconds });
-    if (scale) this.babyScale.set(`${x}|${y}`, scale);
+  private queueSpawnAt(type: EnemyTypeId, x: number, y: number, variant?: MobVariant): void {
+    this.arena.fx.ring(x, y, 12, 0xa040ff, this.config.telegraphSeconds);
+    this.pending.push({ x, y, type, timeLeft: this.config.telegraphSeconds, variant });
   }
-  private readonly babyScale = new Map<string, number>();
 
   /** После задержки появляется моб. */
   private updatePending(dt: number): void {
@@ -122,11 +123,8 @@ export class EnemyManager {
 
       if (spawn.timeLeft <= 0) {
         this.pending.splice(i, 1);
-        const key = `${spawn.x}|${spawn.y}`;
-        const scale = this.babyScale.get(key);
-        this.babyScale.delete(key);
         this.arena.fx.poof(spawn.x, spawn.y, 0.7);
-        this.spawn(spawn.type, spawn.x, spawn.y, scale ? { scale, hpMul: 0.5 } : undefined);
+        this.spawn(spawn.type, spawn.x, spawn.y, spawn.variant);
       }
     }
   }

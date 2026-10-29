@@ -1,16 +1,20 @@
 import Phaser from 'phaser';
 import type { EnemyConfig } from '../configs/characters';
 import { COLORS, DEPTH } from '../configs/game';
-import { TEXTURES } from '../configs/assets';
+import { TEXTURES, type PlayerDirection } from '../configs/assets';
 import { SETTINGS } from '../configs/settings';
 import { session } from '../state/Session';
+import { ensureHeroSheet, facingOf, heroAnimKey, heroOrigin, playKeepingStep } from '../systems/HeroArt';
 import type { Arena, Point } from '../types';
 
 const SPEED_VARIATION = { min: 0.9, max: 1.15 } as const;
 
 export interface MobVariant { scale?: number; hpMul?: number }
 
-/** Общие здоровье, урон, отбрасывание и смерть; поведение движения задаёт конкретный моб. */
+/**
+ * Общие здоровье, урон, отбрасывание и смерть; поведение движения задаёт конкретный моб.
+ * Каждый моб — кукла из HeroArt (тело и вещи из конфига): лист кадров ходьбы и покоя в 8 сторон.
+ */
 export abstract class Mob extends Phaser.GameObjects.Sprite {
   readonly config: EnemyConfig;
   hp: number;
@@ -22,6 +26,8 @@ export abstract class Mob extends Phaser.GameObjects.Sprite {
   protected contactCd = 0.5;
   protected shadow: Phaser.GameObjects.Image | null = null;
   protected showBar = true;
+  protected facing: PlayerDirection = 'down';
+  private readonly sheet: string;
   private knockX = 0;
   private knockY = 0;
   private barTimer = 0;
@@ -29,7 +35,9 @@ export abstract class Mob extends Phaser.GameObjects.Sprite {
   private flashTimer = 0;
 
   protected constructor(scene: Phaser.Scene, x: number, y: number, config: EnemyConfig, arena: Arena, variant: MobVariant = {}) {
-    super(scene, x, y, config.texture, config.frame);
+    const sheet = ensureHeroSheet(scene, config.outfit, config.body);
+    super(scene, x, y, sheet, '0');
+    this.sheet = sheet;
     this.config = config;
     this.arena = arena;
     this.maxHp = Math.max(1, Math.round(config.hp * (variant.hpMul ?? 1)));
@@ -38,9 +46,27 @@ export abstract class Mob extends Phaser.GameObjects.Sprite {
     this.speed = config.speed * Phaser.Math.FloatBetween(SPEED_VARIATION.min, SPEED_VARIATION.max);
 
     scene.add.existing(this);
-    const size = config.displaySize * (variant.scale ?? 1);
-    this.setDisplaySize(size, size);
+    // displaySize — ширина на экране; высота — в тех же пропорциях, что и кадр
+    this.setScale((config.displaySize / this.width) * (variant.scale ?? 1));
     this.baseScale = this.scaleX;
+    const origin = heroOrigin(config.body);
+    this.setOrigin(origin.x, origin.y);
+    this.animate(false);
+  }
+
+  /** Повернуться к (dx, dy): 8 сторон, на границе секторов направление не мигает. */
+  protected face(dx: number, dy: number): void {
+    if (dx === 0 && dy === 0) return;
+    this.facing = facingOf(dx, dy, this.facing);
+  }
+
+  /** Ходьба или покой в текущую сторону; при повороте шаг не сбивается. */
+  protected animate(walking: boolean): void { playKeepingStep(this, heroAnimKey(this.sheet, walking ? 'walk' : 'idle', this.facing)); }
+
+  /** Шаг в направлении (dx, dy). Возвращает true, если упёрся в препятствие. */
+  protected step(dt: number, dx: number, dy: number, speedMul = 1): boolean {
+    const l = Math.hypot(dx, dy) || 1;
+    return this.arena.move(this, (dx / l) * this.speed * speedMul * dt, (dy / l) * this.speed * speedMul * dt, this.config.radius, this.config.flying);
   }
 
   /** Вызывается каждый кадр менеджером врагов. */
@@ -116,9 +142,6 @@ export abstract class Mob extends Phaser.GameObjects.Sprite {
     this.arena.playSfx('splat');
     this.arena.shake(0.004, 100);
     session.runKills += 1;
-    for (const d of this.config.drops) {
-      if (Math.random() <= d.chance) this.arena.dropLoot(this.x, this.y - 4, d.kind, Phaser.Math.Between(d.min, d.max));
-    }
     this.emit('died', this);
     this.shadow?.destroy();
     this.destroy();

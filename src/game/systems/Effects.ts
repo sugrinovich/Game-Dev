@@ -18,6 +18,8 @@ export interface BurstOptions {
 /** Мелкие эффекты: частицы, вспышки, всплывающие числа. Частицы — простые картинки без внешних плагинов. */
 export class Effects {
   private readonly parts: Part[] = [];
+  /** Погасшие частицы не удаляются, а ждут повторного использования: меньше мусора — ровнее 60 кадров. */
+  private readonly pool: Phaser.GameObjects.Image[] = [];
 
   constructor(private readonly scene: Phaser.Scene) {}
 
@@ -32,9 +34,8 @@ export class Effects {
       const sp = Phaser.Math.FloatBetween(s0, s1);
       const life = Phaser.Math.FloatBetween(l0, l1);
       const sc = Phaser.Math.FloatBetween(z0, z1) / 2;
-      const img = this.scene.add.image(o.x, o.y, TEXTURES.px)
-        .setTint(Phaser.Utils.Array.GetRandom(tints)).setScale(sc).setDepth(o.depth ?? DEPTH.fx);
-      if (o.blend !== undefined) img.setBlendMode(o.blend);
+      const img = (this.pool.pop() ?? this.scene.add.image(0, 0, TEXTURES.px)).setPosition(o.x, o.y).setVisible(true).setAlpha(1)
+        .setTint(Phaser.Utils.Array.GetRandom(tints)).setScale(sc).setDepth(o.depth ?? DEPTH.fx).setBlendMode(o.blend ?? Phaser.BlendModes.NORMAL);
       this.parts.push({ img, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, gy: o.gravity ?? 0, life, max: life, endScale: o.endScale ?? 0, baseScale: sc, drag: o.drag ?? 0 });
     }
   }
@@ -43,7 +44,11 @@ export class Effects {
     for (let i = this.parts.length - 1; i >= 0; i--) {
       const p = this.parts[i]!;
       p.life -= dt;
-      if (p.life <= 0) { p.img.destroy(); this.parts.splice(i, 1); continue; }
+      if (p.life <= 0) {
+        p.img.setVisible(false); this.pool.push(p.img);
+        this.parts[i] = this.parts[this.parts.length - 1]!; this.parts.pop();
+        continue;
+      }
       p.vy += p.gy * dt;
       if (p.drag) { const k = Math.max(0, 1 - p.drag * dt); p.vx *= k; p.vy *= k; }
       p.img.x += p.vx * dt; p.img.y += p.vy * dt;
@@ -52,9 +57,9 @@ export class Effects {
     }
   }
 
-  /** Проигрывает анимацию из атласа и удаляет спрайт. */
-  anim(x: number, y: number, key: string, first: string, scale = 1, depth: number = DEPTH.fx, tint?: number): Phaser.GameObjects.Sprite {
-    const s = this.scene.add.sprite(x, y, TEXTURES.sprites, first).setDepth(depth).setScale(scale);
+  /** Проигрывает разовую анимацию эффекта (лист с тем же ключом) и удаляет спрайт. */
+  anim(x: number, y: number, key: string, scale = 1, depth: number = DEPTH.fx, tint?: number): Phaser.GameObjects.Sprite {
+    const s = this.scene.add.sprite(x, y, key, '0').setDepth(depth).setScale(scale);
     s.setOrigin(0.5, 0.5);
     if (tint !== undefined) s.setTint(tint);
     s.play(key);
@@ -62,9 +67,9 @@ export class Effects {
     return s;
   }
 
-  hitSpark(x: number, y: number): void { this.anim(x, y, 'spark', 'spark_0', 1); }
-  dust(x: number, y: number): void { this.anim(x, y + 2, 'dust', 'dust_0', 1, y + 1); }
-  poof(x: number, y: number, scale = 1): void { this.anim(x, y - 4, 'poof', 'poof_0', scale); }
+  hitSpark(x: number, y: number): void { this.anim(x, y, 'spark'); }
+  dust(x: number, y: number): void { this.anim(x, y + 2, 'dust', 1, y + 1); }
+  poof(x: number, y: number, scale = 1): void { this.anim(x, y - 4, 'poof', scale); }
 
   floatText(x: number, y: number, text: string, color: number = COLORS.text, big = false): void {
     const t = new PText(this.scene, x, y, text, { ax: 0.5, ay: 1, color, font: big ? 'big' : 'ui' }).setDepth(DEPTH.fx + 5);
@@ -91,7 +96,11 @@ export class Effects {
     });
   }
 
-  clear(): void { for (const p of this.parts) p.img.destroy(); this.parts.length = 0; }
+  clear(): void {
+    for (const p of this.parts) p.img.destroy();
+    for (const img of this.pool) img.destroy();
+    this.parts.length = 0; this.pool.length = 0;
+  }
 }
 
 /** Создаёт служебные текстуры: точка, свечение, тень. */

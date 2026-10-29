@@ -1,16 +1,16 @@
 /** Общие настройки игры: размер экрана, имена сцен, порядок отрисовки. */
 
 export const GAME = {
-  title: 'ЗАЛ КЛИНКОВ',
-  subtitle: 'замок · арены · сокровища',
+  title: 'ОСАДА БЕЗДНЫ',
+  subtitle: 'последний рыцарь замка',
   /** Внутреннее разрешение. Окно масштабируется целым числом раз — пиксели остаются квадратными. */
   width: 480,
   height: 270,
   targetFps: 60,
   frameHistory: 5,
   backgroundColor: 0x10151e,
-  saveKey: 'camp-at-the-thicket/save-v1',
-  settingsKey: 'camp-at-the-thicket/settings-v1',
+  saveKey: 'abyss-siege/save-v1',
+  settingsKey: 'abyss-siege/settings-v1',
 } as const;
 
 export const SCENES = {

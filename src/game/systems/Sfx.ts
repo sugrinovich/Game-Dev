@@ -80,9 +80,6 @@ class AudioSystem {
       case 'error': this.tone(180, 120, 0.15, 'sawtooth', 0.1); break;
       case 'swing': this.noise(0.14, 1800, 0.22, 0, 0.7); this.tone(300, 120, 0.1, 'triangle', 0.06); break;
       case 'hit': this.noise(0.1, 900, 0.4); this.tone(220, 70, 0.12, 'square', 0.12); break;
-      case 'chop': this.noise(0.08, 500, 0.5, 0, 2); this.tone(140, 80, 0.09, 'square', 0.1); break;
-      case 'mine': this.noise(0.07, 2600, 0.4, 0, 3); this.tone(900, 500, 0.06, 'square', 0.08); break;
-      case 'leaf': this.noise(0.12, 3500, 0.25, 0, 0.6); break;
       case 'pickup': this.tone(660, 990, 0.07, 'square', 0.07); this.tone(990, 1320, 0.08, 'square', 0.06, 0.06); break;
       case 'hurt': this.tone(260, 60, 0.28, 'sawtooth', 0.16); this.noise(0.12, 600, 0.3); break;
       case 'dash': this.noise(0.18, 1200, 0.2, 0, 0.5); break;

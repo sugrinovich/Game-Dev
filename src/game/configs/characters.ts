@@ -1,10 +1,8 @@
-import { TEXTURES } from './assets';
 import { SETTINGS } from './settings';
-import type { ResourceId } from './items';
+import type { BodyId, Outfit } from '../systems/HeroArt';
 
 /** Параметры персонажа игрока. */
 export interface PlayerConfig {
-  texture: string;
   /** Размер квадратного спрайта на экране в пикселях. */
   displaySize: number;
   /** пикселей в секунду */
@@ -13,14 +11,13 @@ export interface PlayerConfig {
   radius: number;
 }
 
-export interface Drop { kind: ResourceId; chance: number; min: number; max: number }
-
 /** Параметры врага. */
 export interface EnemyConfig {
   name: string;
-  texture: string;
-  /** Кадр в атласе (для мобов из атласа) */
-  frame?: string;
+  /** Тело куклы и надетые вещи (systems/HeroArt.ts): из них рисуется лист кадров в 8 сторон. */
+  body: BodyId;
+  outfit: Outfit;
+  /** Ширина на экране в пикселях (высота — в пропорциях кадра). Равна кадру тела — пиксели 1:1. */
   displaySize: number;
   speed: number;
   radius: number;
@@ -29,36 +26,22 @@ export interface EnemyConfig {
   hp: number;
   /** Урон от касания / атаки */
   damage: number;
-  drops: Drop[];
   flying?: boolean;
 }
 
 /** Персонажи, за которых можно играть. Новый персонаж = новая запись тут. */
 export const PLAYER_CHARACTERS = {
-  swordsman: {
-    texture: TEXTURES.player,
-    ...SETTINGS.player,
-  },
+  swordsman: { ...SETTINGS.player },
 } satisfies Record<string, PlayerConfig>;
 
-/** Параметры мобов; поведение реализуется в наследниках Mob. */
+/** Параметры мобов; поведение реализуется в наследниках Mob. Все враги — куклы из HeroArt: своё тело и обычные вещи. */
 export const ENEMY_TYPES = {
-  slime: {
-    name: 'Слизень', texture: TEXTURES.slimeRun, displaySize: 64, ...SETTINGS.enemy, hp: 4, damage: 7,
-    drops: [{ kind: 'gel', chance: 0.75, min: 1, max: 2 }],
-  },
-  sporeling: {
-    name: 'Споровик', texture: TEXTURES.sprites, frame: 'sporeling_walk_0', displaySize: 32, speed: 21, radius: 7, separationRadius: 9, hp: 8, damage: 10,
-    drops: [{ kind: 'spores', chance: 0.9, min: 1, max: 2 }, { kind: 'berries', chance: 0.25, min: 1, max: 1 }],
-  },
-  wasp: {
-    name: 'Шершень', texture: TEXTURES.sprites, frame: 'wasp_0', displaySize: 32, speed: 62, radius: 5, separationRadius: 8, hp: 3, damage: 7, flying: true,
-    drops: [{ kind: 'stinger', chance: 0.5, min: 1, max: 1 }],
-  },
-  king: {
-    name: 'Король слизней', texture: TEXTURES.slimeRun, displaySize: 150, speed: 24, radius: 22, separationRadius: 26, hp: 70, damage: 11,
-    drops: [{ kind: 'royal_gel', chance: 1, min: 1, max: 1 }, { kind: 'gel', chance: 1, min: 6, max: 8 }],
-  },
+  skeleton: { name: 'Скелет-мечник', body: 'skeleton', outfit: { weapon: 'sword', head: 'helm' }, displaySize: 32, speed: 34, radius: 5, separationRadius: 8, hp: 7, damage: 9 },
+  archer: { name: 'Скелет-лучник', body: 'skeleton', outfit: { weapon: 'bow', belt: 'quiver' }, displaySize: 32, speed: 30, radius: 5, separationRadius: 8, hp: 4, damage: 6 },
+  // орда Бездны: кадр орка 36, огра 48, Короля 64 (телосложение — в HeroArt.ts)
+  orc: { name: 'Орк-рубака', body: 'orc', outfit: { legs: 'loincloth', body: 'hide', weapon: 'axe' }, displaySize: 36, speed: 40, radius: 6, separationRadius: 9, hp: 6, damage: 8 },
+  ogre: { name: 'Огр-громила', body: 'ogre', outfit: { legs: 'loincloth', weapon: 'club' }, displaySize: 48, speed: 22, radius: 10, separationRadius: 13, hp: 18, damage: 13 },
+  king: { name: 'Король Бездны', body: 'abyssKing', outfit: { weapon: 'orb' }, displaySize: 64, speed: 26, radius: 14, separationRadius: 18, hp: 70, damage: 12, flying: true },
 } satisfies Record<string, EnemyConfig>;
 
 export type PlayerCharacterId = keyof typeof PLAYER_CHARACTERS;

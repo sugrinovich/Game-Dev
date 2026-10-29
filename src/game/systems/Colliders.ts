@@ -1,5 +1,5 @@
 import type { Point } from '../types';
-import type { Terrain } from './Terrain';
+import type { MapBounds } from './MapBounds';
 
 export interface Circle { x: number; y: number; r: number }
 
@@ -50,17 +50,16 @@ export class Colliders {
   }
 }
 
-/** Двигает круг по карте: упирается в препятствия и воду, но скользит вдоль них. */
-export function moveCircle(e: Point, dx: number, dy: number, r: number, flying: boolean, colliders: Colliders, terrain: Terrain): boolean {
-  const W = terrain.spec.width, H = terrain.spec.height;
+/** Двигает круг по карте: упирается в стены и препятствия, но скользит вдоль них. Летающие — только в пределах стен. */
+export function moveCircle(e: Point, dx: number, dy: number, r: number, flying: boolean, colliders: Colliders, map: MapBounds): boolean {
   if (flying) {
-    const b = terrain.spec.bounds;
-    e.x = Math.min(W - (b?.side ?? 6), Math.max(b?.side ?? 6, e.x + dx));
-    e.y = Math.min(H - (b?.bottom ?? 6), Math.max(b?.top ?? 6, e.y + dy));
+    const b = map.edges;
+    e.x = Math.min(map.width - b.side, Math.max(b.side, e.x + dx));
+    e.y = Math.min(map.height - b.bottom, Math.max(b.top, e.y + dy));
     return false;
   }
   const blockedAt = (x: number, y: number): boolean =>
-    terrain.isBlocked(x, y) || terrain.isBlocked(x - r * 0.8, y) || terrain.isBlocked(x + r * 0.8, y) || colliders.overlaps(x, y, r);
+    map.isBlocked(x, y) || map.isBlocked(x - r * 0.8, y) || map.isBlocked(x + r * 0.8, y) || colliders.overlaps(x, y, r);
   const stuck = blockedAt(e.x, e.y);
   let blocked = false;
   if (dx !== 0) {

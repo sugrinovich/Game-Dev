@@ -1,106 +1,215 @@
 import Phaser from 'phaser';
-import {
-  ATLAS_ANIMS, PLAYER_DIRECTIONS, PLAYER_IDLE_ANIMATIONS, PLAYER_IDLE_SHEET, PLAYER_WALK_ANIMATIONS, PLAYER_WALK_SHEET,
-  SLIME_DIRECTIONS, SLIME_RUN_ANIMATIONS, SLIME_RUN_SHEET, TEXTURES, URLS,
-} from '../configs/assets';
+import { TEXTURES } from '../configs/assets';
 import { COLORS, GAME, SCENES } from '../configs/game';
-import { makeUtilityTextures } from '../systems/Effects';
+import { EQUIPMENT_IDS, LOCATIONS, type EquipmentId } from '../configs/items';
+import { ENEMY_TYPES } from '../configs/characters';
+import { outfitFor } from '../characters/Player';
+import { ensureArrowTexture } from '../characters/Skeleton';
 import { PText } from '../ui/PText';
-import { drawPanel } from '../ui/Panel';
-import { makeCastleTextures } from '../systems/CastleArt';
+import { drawDiamond, drawPlate, UI } from '../ui/Panel';
+import { ARENA_SIZE, arenaGroundKey, castleTextureJobs, HALL_GROUND_KEY, HALL_SIZE, paintCastleFront, paintCastleGround } from '../systems/CastleArt';
+import { Effects } from '../systems/Effects';
+import { heroSheetJobs } from '../systems/HeroArt';
+import { effectTextureJobs } from '../systems/MobArt';
+import { iconTextureJobs } from '../systems/IconArt';
+import { audio } from '../systems/Sfx';
+import { addTitleLogo, SiegeBackdrop, TITLE_DEPTH } from '../systems/TitleArt';
+
+const W = GAME.width;
+const H = GAME.height;
+
+/** Сколько миллисекунд за кадр отдавать на рисование текстур: остальное время — анимации заставки (60 FPS). */
+const JOB_BUDGET_MS = 6;
+/** Полоса-меч: начало клинка у гарды, середина клинка по высоте, длина клинка; раскалённый край в пикселях. */
+const SWORD = { x: 136, y: 124, len: 216, hot: 22 } as const;
+/** Как часто сменяется строка летописи или совета внизу (с). */
+const STORY_EVERY = 3.6;
+
+const CHRONICLE = [
+  'Год Пепельной луны. Над долиной разверзлась Бездна.',
+  'Её короли ведут орков, огров и мёртвых к замку.',
+  'Гарнизон пал. У ворот — последний рыцарь.',
+  'В шортах и с палкой. Но клинок куётся в бою.',
+];
 
 const TIPS = [
   'Торговец внизу зала продаёт снаряжение за монеты.',
-  'I — инвентарь. Купленные предметы нужно экипировать.',
-  'Рывок (SHIFT) даёт мгновение неуязвимости.',
+  'I — инвентарь. Купленные вещи нужно надеть.',
+  'Рывок (SHIFT) даёт миг неуязвимости — и от стрел тоже.',
+  'Скелет-мечник краснеет перед ударом — отступите.',
+  'Лучник держит дистанцию: подберитесь вплотную.',
   'Победите все волны и босса, чтобы открыть следующую арену.',
   'Монеты сохраняются даже при поражении.',
+  'Казначейство добавляет монеты за каждого врага.',
 ];
 
-/** Экран загрузки: название игры, полоса прогресса и подсказка. Заодно создаёт все анимации. */
+/** Этап загрузки: подпись на экране и задания на отрисовку. */
+interface Stage { label: string; jobs: (() => void)[] }
+
+/** Все сочетания надетых вещей: листы героя рисуются заранее, и переодевание в игре не даёт рывка. */
+function equipmentCombos(): Record<EquipmentId, boolean>[] {
+  return Array.from({ length: 1 << EQUIPMENT_IDS.length }, (_, mask) =>
+    Object.fromEntries(EQUIPMENT_IDS.map((id, i) => [id, (mask & (1 << i)) !== 0])) as Record<EquipmentId, boolean>);
+}
+
+/**
+ * Экран загрузки «Осада Бездны»: живая заставка, меч-полоса, который куют от гарды к острию,
+ * и одна строка внизу — летопись осады, затем советы. Файлов нет — все текстуры рисуются здесь понемногу каждый кадр, без подвисаний.
+ * В конце ждёт нажатия: так браузер разрешает звук, и в меню сразу играет музыка.
+ */
 export class PreloadScene extends Phaser.Scene {
+  private stages: Stage[] = [];
+  private stageIndex = 0;
+  private jobsTotal = 0;
+  private jobsDone = 0;
+  private finished = false;
+  private leaving = false;
+  private fx!: Effects;
+  private sword!: Phaser.GameObjects.Graphics;
+  private edgeGlow!: Phaser.GameObjects.Image;
+  private status!: PText;
+  private press!: PText;
+  private story!: PText;
+  private storyIndex = 0;
+  private sparkT = 0;
+
   constructor() {
     super({ key: SCENES.preload });
   }
 
-  preload(): void {
-    const { width: W, height: H } = GAME;
-    this.cameras.main.setBackgroundColor(GAME.backgroundColor);
-    const g = this.add.graphics();
-    for (let y = 0; y < H; y += 3) {
-      const k = y / H;
-      g.fillStyle(Phaser.Display.Color.GetColor(Math.round(14 + 26 * k), Math.round(11 + 18 * k), Math.round(26 + 34 * k)), 1).fillRect(0, y, W, 3);
-    }
-    const title = new PText(this, W / 2, 78, GAME.title, { font: 'big', ax: 0.5, ay: 0.5, color: COLORS.gold, scale: 2 });
-    new PText(this, W / 2, 112, GAME.subtitle, { ax: 0.5, color: COLORS.dim });
-    this.tweens.add({ targets: title, y: 74, duration: 1400, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
-
-    const bw = 220, bx = (W - bw) / 2, by = 176;
-    const barBg = this.add.graphics();
-    drawPanel(barBg, bx - 6, by - 6, bw + 12, 22);
-    const bar = this.add.graphics();
-    const pct = new PText(this, W / 2, by + 22, 'Загрузка…', { ax: 0.5, color: COLORS.text });
-    new PText(this, W / 2, H - 22, TIPS[Math.floor(Math.random() * TIPS.length)] ?? '', { ax: 0.5, color: COLORS.dim });
-    let shine = 0;
-    this.load.on('progress', (v: number) => {
-      bar.clear();
-      bar.fillStyle(0x3f7a82, 1).fillRect(bx, by, Math.round(bw * v), 10);
-      bar.fillStyle(0x5fe0d4, 1).fillRect(bx, by, Math.round(bw * v), 4);
-      pct.setText(`Загрузка… ${Math.round(v * 100)}%`);
-    });
-    this.time.addEvent({ delay: 60, loop: true, callback: () => { shine = (shine + 9) % bw; bar.fillStyle(0xffffff, 0.35).fillRect(bx + shine, by, 3, 4); } });
-
-    this.load.spritesheet(TEXTURES.player, URLS.player, { frameWidth: PLAYER_WALK_SHEET.frameSize, frameHeight: PLAYER_WALK_SHEET.frameSize });
-    this.load.spritesheet(TEXTURES.playerIdle, URLS.playerIdle, { frameWidth: PLAYER_IDLE_SHEET.frameSize, frameHeight: PLAYER_IDLE_SHEET.frameSize });
-    this.load.spritesheet(TEXTURES.slimeRun, URLS.slimeRun, { frameWidth: SLIME_RUN_SHEET.frameSize, frameHeight: SLIME_RUN_SHEET.frameSize });
-    this.load.spritesheet(TEXTURES.slimeRunShadow, URLS.slimeRunShadow, { frameWidth: SLIME_RUN_SHEET.frameSize, frameHeight: SLIME_RUN_SHEET.frameSize });
-    this.load.atlas(TEXTURES.sprites, URLS.spritesPng, URLS.spritesJson);
-    this.load.image('title_sky', URLS.titleSky);
-    this.load.image('title_moon', URLS.titleMoon);
-    this.load.image('title_hills', URLS.titleHills);
-    this.load.image('title_forest_far', URLS.titleForestFar);
-    this.load.image('title_forest_near', URLS.titleForestNear);
-    this.load.image('title_ground', URLS.titleGround);
-    this.load.image('title_vignette', URLS.titleVignette);
-  }
-
   create(): void {
-    makeUtilityTextures(this);
-    makeCastleTextures(this);
-    this.createAnimations();
-    // чтобы экран загрузки успевали прочитать, даже когда всё загрузилось мгновенно
-    this.time.delayedCall(900, () => {
-      this.cameras.main.fadeOut(350, 0, 0, 0);
-      this.cameras.main.once(Phaser.Cameras.Scene2D.Events.FADE_OUT_COMPLETE, () => this.scene.start(SCENES.menu));
+    this.cameras.main.setBackgroundColor(GAME.backgroundColor);
+    new SiegeBackdrop(this);
+    this.add.image(0, 0, 'title_vignette').setOrigin(0, 0).setDepth(TITLE_DEPTH.vignette).setAlpha(0.55);
+    addTitleLogo(this);
+    this.fx = new Effects(this);
+    const d = TITLE_DEPTH.ui;
+    this.sword = this.add.graphics().setDepth(d);
+    this.edgeGlow = this.add.image(SWORD.x, SWORD.y, TEXTURES.glow).setTint(0xff8a2a).setBlendMode(Phaser.BlendModes.ADD).setScale(0.9, 0.5).setDepth(d + 1);
+    this.status = new PText(this, W / 2, SWORD.y + 10, '', { ax: 0.5, color: COLORS.text }).setDepth(d);
+    this.buildStory();
+    this.press = new PText(this, W / 2, SWORD.y + 26, 'Нажмите любую клавишу', { ax: 0.5, color: COLORS.gold }).setDepth(d).setAlpha(0);
+
+    this.stages = this.textureStages();
+    this.jobsTotal = this.stages.reduce((n, s) => n + s.jobs.length, 0);
+    this.drawSword(0);
+  }
+
+  /** Всё, что рисуется кодом, — по этапам с понятными названиями. */
+  private textureStages(): Stage[] {
+    return [
+      { label: 'Возводим стены замка', jobs: castleTextureJobs(this) },
+      {
+        label: 'Мостим залы и арены', jobs: [
+          () => paintCastleGround(this, HALL_GROUND_KEY, HALL_SIZE.w, HALL_SIZE.h, 'hall'),
+          ...LOCATIONS.map((loc) => () => paintCastleGround(this, arenaGroundKey(loc.theme), ARENA_SIZE.w, ARENA_SIZE.h, loc.theme)),
+          () => paintCastleFront(this, HALL_SIZE.w, HALL_SIZE.h, 'hall', null),
+          ...LOCATIONS.map((loc) => () => paintCastleFront(this, ARENA_SIZE.w, ARENA_SIZE.h, loc.theme, ARENA_SIZE.w / 2)),
+        ],
+      },
+      { label: 'Куём доспехи героя', jobs: equipmentCombos().flatMap((equipped) => heroSheetJobs(this, outfitFor(equipped))) },
+      { label: 'Собираем орду Бездны', jobs: Object.values(ENEMY_TYPES).flatMap((e) => heroSheetJobs(this, e.outfit, e.body)) },
+      { label: 'Чеканим монеты и гербы', jobs: iconTextureJobs(this) },
+      { label: 'Закаляем клинки', jobs: effectTextureJobs(this) },
+      { label: 'Точим стрелы', jobs: [() => ensureArrowTexture(this)] },
+    ];
+  }
+
+  /** Одна строка внизу: сначала по очереди летопись осады, потом советы — сменяются с плавным затуханием. */
+  private buildStory(): void {
+    const d = TITLE_DEPTH.ui;
+    const lines = [...CHRONICLE, ...TIPS.map((t) => `Совет: ${t}`)];
+    drawPlate(this.add.graphics().setDepth(d), 0, H - 16, W, 16, 0.75);
+    this.story = new PText(this, W / 2, H - 14, lines[0]!, { ax: 0.5, color: 0xd8c8a8 }).setDepth(d);
+    this.time.addEvent({
+      delay: STORY_EVERY * 1000, loop: true,
+      callback: () => this.tweens.add({
+        targets: this.story, alpha: 0, duration: 250, yoyo: true,
+        onYoyo: () => {
+          // летопись — один раз по порядку, дальше по кругу только советы
+          this.storyIndex = this.storyIndex + 1 < lines.length ? this.storyIndex + 1 : CHRONICLE.length;
+          const line = lines[this.storyIndex]!;
+          this.story.setText(line).setColor(this.storyIndex < CHRONICLE.length ? 0xd8c8a8 : COLORS.dim);
+        },
+      }),
     });
   }
 
-  private createAnimations(): void {
-    PLAYER_DIRECTIONS.forEach((direction, row) => {
-      this.anims.create({
-        key: PLAYER_WALK_ANIMATIONS[direction],
-        frames: this.anims.generateFrameNumbers(TEXTURES.player, { start: row * PLAYER_WALK_SHEET.columns, end: row * PLAYER_WALK_SHEET.columns + PLAYER_WALK_SHEET.columns - 1 }),
-        frameRate: PLAYER_WALK_SHEET.frameRate, repeat: -1,
-      });
-      this.anims.create({
-        key: PLAYER_IDLE_ANIMATIONS[direction],
-        frames: this.anims.generateFrameNumbers(TEXTURES.playerIdle, { start: row * PLAYER_IDLE_SHEET.columns, end: row * PLAYER_IDLE_SHEET.columns + (PLAYER_IDLE_SHEET.framesPerRow[row] ?? 12) - 1 }),
-        frameRate: PLAYER_IDLE_SHEET.frameRate, repeat: -1,
-      });
-    });
-    SLIME_DIRECTIONS.forEach((direction, row) => {
-      this.anims.create({
-        key: SLIME_RUN_ANIMATIONS[direction],
-        frames: this.anims.generateFrameNumbers(TEXTURES.slimeRun, { start: row * SLIME_RUN_SHEET.columns, end: row * SLIME_RUN_SHEET.columns + SLIME_RUN_SHEET.columns - 1 }),
-        frameRate: SLIME_RUN_SHEET.frameRate, repeat: -1,
-      });
-    });
-    for (const a of ATLAS_ANIMS) {
-      this.anims.create({
-        key: a.key,
-        frames: this.anims.generateFrameNames(TEXTURES.sprites, { prefix: a.prefix, start: 0, end: a.count - 1 }),
-        frameRate: a.rate, repeat: a.loop ? -1 : 0,
-      });
+  override update(_t: number, delta: number): void {
+    const dt = Math.min(delta, 50) / 1000;
+    this.fx.update(dt);
+    if (this.finished) return;
+    const start = performance.now();
+    while (this.stageIndex < this.stages.length && performance.now() - start < JOB_BUDGET_MS) {
+      const stage = this.stages[this.stageIndex]!;
+      const job = stage.jobs.shift();
+      if (job) { job(); this.jobsDone++; } else this.stageIndex++;
     }
+    const v = this.jobsTotal ? this.jobsDone / this.jobsTotal : 1;
+    this.drawSword(v);
+    this.forgeSparks(dt, v);
+    const stage = this.stages[this.stageIndex];
+    if (stage) { this.status.setText(`${stage.label}… ${Math.round(v * 100)}%`); return; }
+    this.finish();
+  }
+
+  /** Всё готово: клинок выкован, ждём нажатия (заодно браузер разрешает звук). */
+  private finish(): void {
+    this.finished = true;
+    this.drawSword(1);
+    this.edgeGlow.setVisible(false);
+    this.status.setText('Клинок выкован. Ворота замка открыты!').setColor(COLORS.gold);
+    this.fx.burst({ x: SWORD.x + SWORD.len, y: SWORD.y, count: 24, speed: [20, 80], life: [0.4, 0.9], size: [1, 3], tints: [0xffffff, 0xfff0a0, 0xc8d0dc], gravity: 60, blend: Phaser.BlendModes.ADD, depth: TITLE_DEPTH.ui + 2 });
+    this.tweens.add({ targets: this.press, alpha: { from: 0, to: 1 }, duration: 600, yoyo: true, repeat: -1, hold: 400 });
+    const go = (): void => {
+      if (this.leaving) return;
+      this.leaving = true;
+      audio.init(); audio.play('portal');
+      this.cameras.main.fadeOut(400, 0, 0, 0);
+      this.cameras.main.once(Phaser.Cameras.Scene2D.Events.FADE_OUT_COMPLETE, () => this.scene.start(SCENES.menu));
+    };
+    this.input.keyboard?.once('keydown', go);
+    this.input.once('pointerdown', go);
+  }
+
+  /** Меч-полоса: тёмная заготовка, выкованная сталь с долом, раскалённый край; гарда, рукоять, навершие. */
+  private drawSword(v: number): void {
+    const g = this.sword, { x, y, len, hot } = SWORD;
+    const forged = Math.round(len * Phaser.Math.Clamp(v, 0, 1));
+    g.clear();
+    g.fillStyle(UI.ironDark, 1).fillRect(x - 1, y - 3, len + 2, 7).fillTriangle(x + len, y - 3, x + len + 9, y + 0.5, x + len, y + 4);
+    g.fillStyle(0x2a2a34, 1).fillRect(x, y - 2, len, 5);
+    g.fillStyle(v >= 1 ? 0xc8d0dc : 0x2a2a34, 1).fillTriangle(x + len, y - 2, x + len + 7, y + 0.5, x + len, y + 3);
+    g.fillStyle(0xa8b0bc, 1).fillRect(x, y - 2, forged, 5);
+    g.fillStyle(0xe8eef4, 1).fillRect(x, y - 2, forged, 1);
+    g.fillStyle(0x6a7282, 1).fillRect(x, y, forged, 1);
+    g.fillStyle(0x525a6a, 1).fillRect(x, y + 2, forged, 1);
+    if (v < 1) {
+      for (let i = 0; i < hot && i < forged; i++) {
+        const k = i / hot;   // 0 — у самого края, 1 — уже остыло
+        const color = k < 0.15 ? 0xfff6c0 : k < 0.35 ? 0xffd060 : k < 0.6 ? 0xff8a2a : 0xc83a1a;
+        g.fillStyle(color, 1 - k * 0.7).fillRect(x + forged - 1 - i, y - 2, 1, 5);
+      }
+    }
+    // гарда, рукоять с обмоткой, навершие
+    g.fillStyle(UI.ironDark, 1).fillRect(x - 4, y - 7, 4, 15);
+    g.fillStyle(UI.gold, 1).fillRect(x - 3, y - 6, 2, 13);
+    g.fillStyle(UI.goldLight, 1).fillRect(x - 3, y - 6, 1, 13);
+    g.fillStyle(UI.ironDark, 1).fillRect(x - 15, y - 2, 11, 5);
+    g.fillStyle(0x6a4630, 1).fillRect(x - 14, y - 1, 9, 3);
+    g.fillStyle(0x4a3020, 1);
+    for (let i = 0; i < 4; i++) g.fillRect(x - 13 + i * 2, y - 1, 1, 3);
+    drawDiamond(g, x - 18, y);
+    this.edgeGlow.setPosition(x + forged, y);
+  }
+
+  /** Искры летят из-под молота у раскалённого края. */
+  private forgeSparks(dt: number, v: number): void {
+    if (v >= 1 || (this.sparkT -= dt) > 0) return;
+    this.sparkT = 0.07;
+    this.fx.burst({
+      x: SWORD.x + Math.round(SWORD.len * v), y: SWORD.y, count: 2, speed: [20, 70], angle: [-Math.PI, 0], life: [0.25, 0.5],
+      size: [1, 2], tints: [0xfff6c0, 0xffd060, 0xff8a2a], gravity: 160, blend: Phaser.BlendModes.ADD, depth: TITLE_DEPTH.ui + 2,
+    });
   }
 }

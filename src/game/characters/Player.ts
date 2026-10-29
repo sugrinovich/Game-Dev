@@ -1,10 +1,13 @@
 import Phaser from 'phaser';
 import type { PlayerConfig } from '../configs/characters';
-import { PLAYER_WALK_ANIMATIONS, PLAYER_IDLE_ANIMATIONS, PLAYER_ORIGIN, TEXTURES, type PlayerDirection } from '../configs/assets';
+import { HERO_ORIGIN, HERO_SHEET, TEXTURES, type PlayerDirection } from '../configs/assets';
 import { COLORS } from '../configs/game';
 import { SETTINGS } from '../configs/settings';
 import { session } from '../state/Session';
+import { EQUIPMENT_IDS, SHOP_ITEMS, type EquipmentId } from '../configs/items';
+import { ensureHeroSheet, facingOf, GEAR, heroAnimKey, playKeepingStep, STARTER_OUTFIT, type HeroAnimKind, type Outfit } from '../systems/HeroArt';
 import type { Arena } from '../types';
+import { SLASH_ORIGIN } from '../systems/MobArt';
 
 type MoveKeys = Record<'up' | 'down' | 'left' | 'right', Phaser.Input.Keyboard.Key>;
 type ActionKeys = Record<'interact' | 'interact2', Phaser.Input.Keyboard.Key>;
@@ -16,7 +19,25 @@ const ACTION_CODES: Record<string, Buffered> = {
   Space: 'attack', KeyJ: 'attack', ShiftLeft: 'dash', ShiftRight: 'dash', KeyK: 'dash', KeyE: 'interact', Enter: 'interact', KeyQ: 'potion',
 };
 
-/** Персонаж игрока: движение стрелками / WASD, взмах дубиной, рывок и анимации. */
+/** Во что одет герой: стартовая одежда, поверх — надетые предметы (каждый занимает свой слот). */
+export function outfitFor(equipped: Record<EquipmentId, boolean>): Outfit {
+  const outfit: Outfit = { ...STARTER_OUTFIT };
+  for (const id of EQUIPMENT_IDS) {
+    if (!equipped[id]) continue;
+    const wear = SHOP_ITEMS[id].wear;
+    outfit[GEAR[wear].slot] = wear;
+  }
+  return outfit;
+}
+
+/** Надетые вещи одним числом: проверка «переоделся ли» каждый кадр без создания объектов (меньше мусора — ровнее кадры). */
+function equippedMask(): number {
+  let mask = 0;
+  for (let i = 0; i < EQUIPMENT_IDS.length; i++) if (session.data.equipped[EQUIPMENT_IDS[i]!]) mask |= 1 << i;
+  return mask;
+}
+
+/** Персонаж игрока: движение стрелками / WASD, взмах оружием, рывок и анимации. Внешний вид зависит от надетых вещей. */
 export class Player extends Phaser.GameObjects.Sprite {
   readonly config: PlayerConfig;
   /** Вызывается один раз, когда здоровье кончилось. */
@@ -49,17 +70,22 @@ export class Player extends Phaser.GameObjects.Sprite {
   private knockY = 0;
   private stepTimer = 0;
   private slashSprite: Phaser.GameObjects.Sprite | null = null;
+  /** Ключ листа кадров для текущей одежды. */
+  private sheet: string;
+  private gearMask = equippedMask();
 
   constructor(scene: Phaser.Scene, x: number, y: number, config: PlayerConfig, private readonly arena: Arena) {
-    super(scene, x, y, config.texture);
+    const sheet = ensureHeroSheet(scene, outfitFor(session.data.equipped));
+    super(scene, x, y, sheet, '0');
+    this.sheet = sheet;
     this.config = config;
-    this.setOrigin(PLAYER_ORIGIN.x, PLAYER_ORIGIN.y);
+    this.setOrigin(HERO_ORIGIN.x, HERO_ORIGIN.y);
     this.setDisplaySize(config.displaySize, config.displaySize);
     this.texture.setFilter(Phaser.Textures.FilterMode.NEAREST);
     this.shadow = scene.add.image(x, y, TEXTURES.shadow).setScale(0.8);
 
     scene.add.existing(this);
-    this.play(PLAYER_IDLE_ANIMATIONS.down);
+    this.play(this.animKey('idle'));
 
     const keyboard = scene.input.keyboard;
     if (!keyboard) {
@@ -72,6 +98,19 @@ export class Player extends Phaser.GameObjects.Sprite {
     keyboard.addKeys({ a: K.SPACE, b: K.SHIFT, c: K.Q, d: K.J, e: K.K });   // перехват, чтобы браузер не прокручивал страницу
     keyboard.on('keydown', this.onKeyDown);
     this.once(Phaser.GameObjects.Events.DESTROY, () => { this.shadow.destroy(); keyboard.off('keydown', this.onKeyDown); });
+  }
+
+  private animKey(kind: HeroAnimKind): string { return heroAnimKey(this.sheet, kind, this.facing); }
+
+  /** Переоделся (надел или снял вещь) — берём лист с новой одеждой и показываем вспышку. */
+  private checkGearChange(): void {
+    const mask = equippedMask();
+    if (mask === this.gearMask) return;
+    this.gearMask = mask;
+    const sheet = ensureHeroSheet(this.scene, outfitFor(session.data.equipped));
+    if (sheet === this.sheet) return;
+    this.sheet = sheet;
+    this.arena.fx.burst({ x: this.x, y: this.y - 12, count: 14, speed: [10, 40], life: [0.4, 0.8], size: [1, 3], tints: [0xf2d060, 0xfff0a0, 0xffffff], gravity: -20, depth: this.y + 5 });
   }
 
   get facingVec(): { x: number; y: number } { return { x: this.aimX, y: this.aimY }; }
@@ -103,7 +142,7 @@ export class Player extends Phaser.GameObjects.Sprite {
 
   private setAim(x: number, y: number): void {
     this.aimX = x; this.aimY = y;
-    this.facing = Math.abs(x) > Math.abs(y) ? (x < 0 ? 'left' : 'right') : (y < 0 ? 'up' : 'down');
+    this.facing = facingOf(x, y, this.facing);
   }
 
   private canAttack(): boolean { return this.attackCd <= 0 && this.attackT <= 0 && this.dashT <= 0 && this.alive && !this.frozen; }
@@ -116,8 +155,8 @@ export class Player extends Phaser.GameObjects.Sprite {
     this.arena.playSfx('swing');
     const ang = Math.atan2(this.aimY, this.aimX);
     this.slashSprite?.destroy();
-    this.slashSprite = this.scene.add.sprite(this.x + this.aimX * 4, this.y - 9 + this.aimY * 4, TEXTURES.sprites, 'slash_0')
-      .setOrigin(8 / 56, 0.5).setRotation(ang).setDepth(this.y + 30);
+    this.slashSprite = this.scene.add.sprite(this.x + this.aimX * 4, this.y - 9 + this.aimY * 4, 'slash', '0')
+      .setOrigin(SLASH_ORIGIN.x, SLASH_ORIGIN.y).setRotation(ang).setDepth(this.y + 30);
     this.slashSprite.play('slash');
     this.slashSprite.once(Phaser.Animations.Events.ANIMATION_COMPLETE, () => { this.slashSprite?.destroy(); this.slashSprite = null; });
   }
@@ -168,11 +207,8 @@ export class Player extends Phaser.GameObjects.Sprite {
 
     this.updateAttack(dt);
 
-    if (moving) {
-      this.play(PLAYER_WALK_ANIMATIONS[this.facing], true);
-    } else {
-      this.play(PLAYER_IDLE_ANIMATIONS[this.facing], true);
-    }
+    this.checkGearChange();
+    playKeepingStep(this, this.animKey(moving ? 'walk' : 'idle'));
 
     // визуальные эффекты: мигание после урона и «поза» взмаха
     this.setDepth(this.y);
@@ -183,7 +219,7 @@ export class Player extends Phaser.GameObjects.Sprite {
 
   private updateAttack(dt: number): void {
     if (this.attackT <= 0) {
-      this.setAngle(0).setScale(this.config.displaySize / 64);
+      this.setAngle(0).setScale(this.config.displaySize / HERO_SHEET.frameSize);
       return;
     }
     this.attackT += dt;
@@ -197,7 +233,7 @@ export class Player extends Phaser.GameObjects.Sprite {
     const lean = Math.sin(k * Math.PI) * 9;
     this.setAngle((this.aimX >= 0 ? 1 : -1) * lean * (this.aimX === 0 ? 0 : 1));
     const sq = Math.sin(k * Math.PI) * 0.08;
-    const base = this.config.displaySize / 64;
+    const base = this.config.displaySize / HERO_SHEET.frameSize;
     this.setScale(base * (1 + sq), base * (1 - sq * 0.8));
     if (t >= 0.24) this.attackT = 0;
   }
@@ -231,7 +267,7 @@ export class Player extends Phaser.GameObjects.Sprite {
     if (session.hp <= 0) {
       this.alive = false;
       this.arena.playSfx('death');
-      this.play(PLAYER_IDLE_ANIMATIONS[this.facing]);
+      this.play(this.animKey('idle'));
       this.scene.tweens.add({ targets: this, angle: 90, alpha: 0.5, duration: 450, ease: 'Cubic.easeOut' });
       this.onDeath?.();
     }

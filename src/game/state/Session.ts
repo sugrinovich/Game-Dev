@@ -1,10 +1,9 @@
 import { GAME } from '../configs/game';
 import { SETTINGS } from '../configs/settings';
-import { BUILDING_IDS, ECONOMY, EQUIPMENT_IDS, GARDEN_YIELD, LOCATIONS, RESOURCES, SHOP_ITEMS, type BuildingId, type Cost, type EquipmentId, type LocationId, type ResourceId, type ShopItemId } from '../configs/items';
+import { BUILDING_IDS, BUILDINGS, ECONOMY, EQUIPMENT_IDS, GARDEN_YIELD, LOCATIONS, POULTICE_PRICE, SHOP_ITEMS, type BuildingId, type EquipmentId, type LocationId, type ShopItemId } from '../configs/items';
 
 export interface SaveData {
   version: 1;
-  resources: Record<ResourceId, number>;
   buildings: Record<BuildingId, number>;
   gardenStage: number;
   poultice: number;
@@ -22,7 +21,6 @@ const zero = <T extends string>(keys: readonly T[]): Record<T, number> =>
 function fresh(): SaveData {
   return {
     version: 1,
-    resources: { ...zero(RESOURCES), wood: 4, fiber: 2 },
     buildings: zero(BUILDING_IDS),
     gardenStage: 0,
     poultice: 1,
@@ -36,13 +34,12 @@ function fresh(): SaveData {
 }
 
 /** Итоги вылазки для окна отчёта в лагере. */
-export interface Report { died: boolean; loot: Partial<Record<ResourceId, number>>; lost: number; kills: number; king: boolean; coins: number; cleared: boolean }
+export interface Report { died: boolean; kills: number; king: boolean; coins: number; cleared: boolean }
 
 /** Всё, что игра помнит: сохранение + текущая вылазка. Один общий объект на игру. */
 class Session {
   data: SaveData = fresh();
   hp = 60;
-  carry: Record<ResourceId, number> = zero(RESOURCES);
   runKills = 0;
   runCoins = 0;
   lastReport: Report | null = null;
@@ -54,7 +51,7 @@ class Session {
   newGame(): void {
     this.data = fresh();
     this.hp = this.maxHp;
-    this.clearCarry();
+    this.clearRun();
     this.lastReport = null;
     this.save();
   }
@@ -67,17 +64,16 @@ class Session {
       const base = fresh();
       this.data = {
         ...base, ...parsed,
-        resources: { ...base.resources, ...parsed.resources },
         buildings: { ...base.buildings, ...parsed.buildings },
         stats: { ...base.stats, ...parsed.stats },
         inventory: { ...base.inventory, ...parsed.inventory },
         equipped: { ...base.equipped, ...parsed.equipped },
-        cleared: Array.isArray(parsed.cleared) ? parsed.cleared.filter((id) => LOCATIONS.some((l) => l.id === id)) : parsed.stats?.kingDefeated ? ['hollow'] : [],
+        cleared: Array.isArray(parsed.cleared) ? parsed.cleared.filter((id) => LOCATIONS.some((l) => l.id === id)) : [],
       };
       this.data.coins = Number.isFinite(this.data.coins) ? Math.max(0, Math.floor(this.data.coins)) : base.coins;
       for (const id of EQUIPMENT_IDS) this.data.equipped[id] = !!this.data.inventory[id] && !!this.data.equipped[id];
       this.hp = this.maxHp;
-      this.clearCarry();
+      this.clearRun();
       return true;
     } catch { return false; }
   }
@@ -91,10 +87,10 @@ class Session {
   get weaponLevel(): number { return this.data.buildings.workshop; }
   get damage(): number { return SETTINGS.combat.baseDamage + this.weaponLevel + (this.data.equipped.sword ? SHOP_ITEMS.sword.bonus : 0); }
   get attackCooldown(): number { return SETTINGS.combat.attackCooldown - 0.04 * Math.max(0, this.weaponLevel - 1); }
-  get capacity(): number { return SETTINGS.base.baseBackpack + SETTINGS.base.backpackPerStorage * this.data.buildings.storage + (this.data.equipped.satchel ? SHOP_ITEMS.satchel.bonus : 0); }
-  get carryCount(): number { return RESOURCES.reduce((n, r) => n + this.carry[r], 0); }
+  /** Доплата за каждого врага: казначейство + кошель охотника. */
+  get killBonus(): number { return ECONOMY.coinsPerTreasury * this.data.buildings.storage + (this.data.equipped.satchel ? SHOP_ITEMS.satchel.bonus : 0); }
 
-  clearCarry(): void { for (const r of RESOURCES) this.carry[r] = 0; this.runKills = 0; this.runCoins = 0; }
+  clearRun(): void { this.runKills = 0; this.runCoins = 0; }
 
   earnCoins(amount: number): void {
     this.data.coins += amount;
@@ -117,7 +113,6 @@ class Session {
 
   toggleEquipment(id: EquipmentId): boolean {
     if (!this.data.inventory[id]) return false;
-    if (id === 'satchel' && this.data.equipped.satchel && this.carryCount > this.capacity - SHOP_ITEMS.satchel.bonus) return false;
     this.data.equipped[id] = !this.data.equipped[id];
     this.hp = Math.min(this.hp, this.maxHp);
     this.save();
@@ -134,49 +129,41 @@ class Session {
     this.save();
   }
 
-  canAfford(cost: Cost): boolean {
-    return RESOURCES.every((r) => (cost[r] ?? 0) <= this.data.resources[r]);
-  }
+  canAfford(price: number): boolean { return this.data.coins >= price; }
 
-  pay(cost: Cost): boolean {
-    if (!this.canAfford(cost)) return false;
-    for (const r of RESOURCES) this.data.resources[r] -= cost[r] ?? 0;
+  pay(price: number): boolean {
+    if (!this.canAfford(price)) return false;
+    this.data.coins -= price;
     return true;
   }
 
-  /** Кладёт добычу в рюкзак. Возвращает, сколько реально поместилось. */
-  addCarry(kind: ResourceId, amount: number): number {
-    const room = Math.max(0, this.capacity - this.carryCount);
-    const n = Math.min(room, amount);
-    this.carry[kind] += n;
-    return n;
+  /** Эликсир из оружейной за монеты. */
+  craftPotion(): boolean {
+    if (this.data.poultice >= SETTINGS.base.poulticeMax || !this.pay(POULTICE_PRICE)) return false;
+    this.data.poultice += 1;
+    this.save();
+    return true;
   }
 
-  /** Завершение вылазки: добыча переезжает на склад. */
+  /** Завершение вылазки: монеты уже в кошельке, обновляем статистику. */
   finishRun(died: boolean, king: boolean, cleared = false): Report {
-    const loot: Partial<Record<ResourceId, number>> = {};
-    let lost = 0;
-    for (const r of RESOURCES) {
-      let n = this.carry[r];
-      if (died) { const l = Math.floor(n * SETTINGS.expedition.deathLossShare); lost += l; n -= l; }
-      if (n > 0) { loot[r] = n; this.data.resources[r] += n; }
-    }
     this.data.stats.expeditions += 1;
     this.data.stats.kills += this.runKills;
     if (died) this.data.stats.deaths += 1;
     if (king) this.data.stats.kingDefeated = true;
     if (this.data.buildings.garden > 0 && this.data.gardenStage < 3) this.data.gardenStage += 1;
-    const report = { died, loot, lost, kills: this.runKills, king, coins: this.runCoins, cleared };
+    const report = { died, kills: this.runKills, king, coins: this.runCoins, cleared };
     this.lastReport = report;
-    this.clearCarry();
+    this.clearRun();
     this.hp = this.maxHp;
     this.save();
     return report;
   }
 
   /** Улучшение здания (или первая постройка). */
-  upgrade(id: BuildingId, cost: Cost): boolean {
-    if (this.data.buildings[id] >= 3 || !this.pay(cost)) return false;
+  upgrade(id: BuildingId): boolean {
+    const lv = this.data.buildings[id];
+    if (lv >= 3 || !this.pay(BUILDINGS[id].prices[lv]!)) return false;
     this.data.buildings[id] += 1;
     if (id === 'garden' && this.data.buildings.garden === 1) this.data.gardenStage = 0;
     this.hp = this.maxHp;
@@ -184,11 +171,12 @@ class Session {
     return true;
   }
 
-  harvestGarden(): Cost | null {
+  /** Урожай аптекарского стола: эликсиры (не больше лимита). Возвращает, сколько получено. */
+  harvestGarden(): number {
     const lv = this.data.buildings.garden;
-    if (lv === 0 || this.data.gardenStage < 3) return null;
-    const gain = GARDEN_YIELD[lv] ?? {};
-    for (const r of RESOURCES) this.data.resources[r] += gain[r] ?? 0;
+    if (lv === 0 || this.data.gardenStage < 3) return 0;
+    const gain = Math.min(GARDEN_YIELD[lv] ?? 0, SETTINGS.base.poulticeMax - this.data.poultice);
+    this.data.poultice += gain;
     this.data.gardenStage = 0;
     this.save();
     return gain;

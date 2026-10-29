@@ -7,11 +7,15 @@ import { BaseScene } from './scenes/BaseScene';
 import { ExpeditionScene } from './scenes/ExpeditionScene';
 import { UIScene } from './scenes/UIScene';
 
-/** Целое число раз увеличиваем картинку 480x270 — пиксели остаются ровными квадратами. */
+/**
+ * Увеличение картинки 480x270 так, чтобы на игровой пиксель приходилось целое число ФИЗИЧЕСКИХ пикселей экрана
+ * (с учётом масштаба Windows/macOS 125%, 150%, Retina). Иначе пиксели разной ширины и карта «рябит» при прокрутке.
+ */
 function pickZoom(): number {
-  const k = Math.min(window.innerWidth / GAME.width, window.innerHeight / GAME.height);
-  // Маленькие окна растягиваем дробно, чтобы игра не была крошечной; от x2 и выше — только целые.
-  return k >= 2 ? Math.floor(k) : Math.max(0.5, k);
+  const dpr = window.devicePixelRatio || 1;
+  const k = Math.min(window.innerWidth / GAME.width, window.innerHeight / GAME.height) * dpr;
+  // совсем маленькое окно (меньше 480x270 физических пикселей) — только тогда дробно
+  return (k >= 1 ? Math.floor(k) : Math.max(0.5, k)) / dpr;
 }
 
 export function createGame(parent: string): Phaser.Game {
@@ -24,7 +28,10 @@ export function createGame(parent: string): Phaser.Game {
     // Nearest-фильтр сохраняет резкими пиксельные спрайты и bitmap-шрифты.
     pixelArt: true,
     smoothPixelArt: false,
-    roundPixels: false,
+    // спрайты стоят ровно на целых пикселях, как и карта — ничего не «дрожит» друг относительно друга
+    roundPixels: true,
+    // просим у браузера производительную видеокарту (на ноутбуках с двумя GPU)
+    powerPreference: 'high-performance',
     // requestAnimationFrame синхронизирует отрисовку с обновлением экрана.
     fps: { target: GAME.targetFps, panicMax: 0, deltaHistory: GAME.frameHistory },
     scene: [BootScene, PreloadScene, MenuScene, BaseScene, ExpeditionScene, UIScene],

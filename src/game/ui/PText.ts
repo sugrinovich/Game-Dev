@@ -22,7 +22,8 @@ export class PText extends Phaser.GameObjects.Container {
     const font = opts.font ?? 'ui';
     const ax = opts.ax ?? 0;
     const ay = opts.ay ?? 0;
-    if (opts.shadow !== false) {
+    // у шрифтов игры контур и тень уже нарисованы в самих буквах; отдельная тень — по желанию
+    if (opts.shadow === true) {
       this.back = scene.add.bitmapText(1, 1, font, text).setOrigin(ax, ay).setTint(COLORS.shadow);
       this.add(this.back);
     }
