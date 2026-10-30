@@ -5,6 +5,7 @@ import { TEXTURES } from '../configs/assets';
 import { DEPTH, GAME, SCENES } from '../configs/game';
 import { SETTINGS } from '../configs/settings';
 import { Colliders, moveCircle } from '../systems/Colliders';
+import { textureResolution } from '../systems/CastleModels';
 import { Effects } from '../systems/Effects';
 import { audio } from '../systems/Sfx';
 import type { MapBounds } from '../systems/MapBounds';
@@ -65,7 +66,7 @@ export abstract class WorldScene extends Phaser.Scene implements Arena {
     this.hitStopLeft = 0;
     this.current = null;
     this.fx = new Effects(this);
-    this.cameras.main.setBounds(0, 0, this.mapW, this.mapH).setBackgroundColor(GAME.backgroundColor).setRoundPixels(true);
+    this.cameras.main.setBounds(0, 0, this.mapW, this.mapH).setBackgroundColor(GAME.backgroundColor).setRoundPixels(true).setZoom(GAME.resolution);
     this.cameras.main.fadeIn(450, 0, 0, 0);
     this.prompt = new PText(this, 0, 0, '', { ax: 0.5, ay: 1 }).setDepth(DEPTH.prompt).setVisible(false);
     this.holdGfx = this.add.graphics().setDepth(DEPTH.prompt - 1);   // под текстом подсказки: плашка и полоска удержания
@@ -103,7 +104,8 @@ export abstract class WorldScene extends Phaser.Scene implements Arena {
     if (img.frame.customPivot) img.setOrigin(img.frame.pivotX, img.frame.pivotY); else img.setOrigin(0.5, 1);
     // случайная фаза, чтобы одинаковые объекты не двигались синхронно
     if (animated) { img.play(frame); img.anims.setProgress(Math.random()); }
-    return img.setDepth(y);
+    // 3D-модели нарисованы детальнее пикселей игры — показываем их обычного размера
+    return img.setScale(1 / textureResolution(img.texture)).setDepth(y);
   }
 
   /** Мягкая тень на полу под объектом: sx, sy — во сколько раз растянуть стандартную тень 32x12. */
@@ -113,7 +115,8 @@ export abstract class WorldScene extends Phaser.Scene implements Arena {
 
   /** Уменьшает крупный объект до роста героя. Возвращает получившийся масштаб. */
   protected fitToHero(img: Phaser.GameObjects.Sprite): number {
-    const scale = Math.min(1, SETTINGS.props.maxHeight / img.height);
+    const res = textureResolution(img.texture);
+    const scale = Math.min(1, SETTINGS.props.maxHeight / (img.height / res)) / res;
     img.setScale(scale);
     return scale;
   }
@@ -168,7 +171,10 @@ export abstract class WorldScene extends Phaser.Scene implements Arena {
     this.prompt.setAlpha(this.promptAlpha).setVisible(this.promptAlpha > 0.02);
     if (!best) { this.drawPromptPlate(); return; }
     const label = best.label() ?? '';
-    this.prompt.setText(`[E] ${label}`).setPosition(Math.round(best.x), Math.round(best.y - best.promptY + Math.sin(this.time.now / 220) * 1.5));
+    this.prompt.setText(`[E] ${label}`);
+    // у самой стены подсказка не уходит за край карты
+    const half = this.prompt.textWidth / 2 + 6;
+    this.prompt.setPosition(Math.round(Phaser.Math.Clamp(best.x, half, this.mapW - half)), Math.round(best.y - best.promptY + Math.sin(this.time.now / 220) * 1.5));
     this.drawPromptPlate();
     if (best.hold && best.hold > 0) {
       if (this.player.interactHeld()) {

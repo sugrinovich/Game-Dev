@@ -53,8 +53,9 @@ export class AbyssKing extends Mob {
 
   /** Сфера над ладонью вспыхивает — и в точку под героем летит огненный шар. */
   private cast(target: Point): void {
-    const grip = gripOffset(this.config.body, this.facing);
-    const from = new Phaser.Math.Vector2(this.x + grip.x * this.scaleX, this.y + (grip.y - ORB.lift) * this.scaleY - this.lift);
+    // смещение кулака — в пикселях игры для спрайта обычного размера; размер Короля задаёт масштаб относительно него
+    const grip = gripOffset(this.config.body, this.facing), k = this.displayWidth / this.config.displaySize;
+    const from = new Phaser.Math.Vector2(this.x + grip.x * k, this.y + (grip.y - ORB.lift) * k - this.lift);
     const to = new Phaser.Math.Vector2(target.x, target.y);
     const ctrl = new Phaser.Math.Vector2((from.x + to.x) / 2, Math.min(from.y, to.y) - 50);
     this.arena.fx.ring(to.x, to.y, KING.blastRadius, 0xff7a2a, KING.flight);

@@ -15,7 +15,7 @@ const OGRE_ATTACK: BruteAttack = { reach: 26, windup: 0.75, recover: 0.6, cooldo
 
 type State = 'chase' | 'windup' | 'recover';
 
-/** Громила орды: идёт к герою (в 8 сторон), замахивается (краснеет) и бьёт. */
+/** Громила орды: идёт к герою (в 8 сторон), замахивается (краснеет, оружие занесено) и бьёт: орк — наискось, огр — сверху в землю. */
 abstract class Brute extends Mob {
   private mode: State = 'chase';
   private timer = 0;
@@ -39,8 +39,14 @@ abstract class Brute extends Mob {
       if (dist < this.attack.reach && this.cooldown <= 0) this.windUp(dx / dist, dy / dist);
     } else if (this.mode === 'windup') {
       this.timer -= dt;
-      if (this.timer <= 0) { this.strike(target, dx / dist, dy / dist); this.mode = 'recover'; this.timer = this.attack.recover; this.cooldown = this.attack.cooldown; }
+      this.windupPose(this.timer, this.attack.windup);
+      if (this.timer <= 0) {
+        this.strike(target, dx / dist, dy / dist);
+        this.mode = 'recover'; this.timer = this.attack.recover; this.cooldown = this.attack.cooldown;
+        this.recoverPose(0, this.timer);
+      }
     } else if ((this.timer -= dt) <= 0) this.mode = 'chase';
+    else this.recoverPose(this.attack.recover - this.timer, this.timer);
   }
 
   private windUp(ux: number, uy: number): void {

@@ -1,12 +1,14 @@
 import Phaser from 'phaser';
-import { COLORS, DEPTH, GAME, SCENES } from '../configs/game';
+import { COLORS, DEPTH, GAME, GLINT_EVERY, SCENES } from '../configs/game';
 import { TEXTURES } from '../configs/assets';
 import { EQUIPMENT_IDS, SHOP_ITEMS, type ShopItemId } from '../configs/items';
 import { SETTINGS } from '../configs/settings';
 import { audio } from '../systems/Sfx';
 import { session } from '../state/Session';
-import { PText } from '../ui/PText';
+import { PText, startGlints } from '../ui/PText';
 import { addCostRow, BAR_COLORS, costWidth, drawBar, drawPanel, drawPlate, drawRibbon, UI } from '../ui/Panel';
+import { InventoryWindow } from '../ui/InventoryWindow';
+import { addIcon } from '../systems/IconArt';
 import type { WorldScene } from './WorldScene';
 
 export interface ChoiceOption {
@@ -36,10 +38,31 @@ const W = GAME.width;
 const H = GAME.height;
 /** Длительность плавного появления окна. */
 const MODAL_FADE_MS = 160;
+/** Высота строки в окне выбора; длинные списки (лавка) — плотнее, чтобы окно влезло в экран. */
+const MODAL_ROW = { normal: 19, compact: 15, compactAfter: 8 } as const;
 /** Как часто обновлять счётчик FPS (клавиша ` / Ё), секунды. */
 const FPS_REFRESH = 0.25;
-/** Табличка состояния в левом верхнем углу: рамка и полоска здоровья (ширина полоски растёт с макс. здоровьем). */
-const HUD = { x: 2, y: 2, w: 150, h: 44, barX: 30, barY: 11, barH: 7, barMaxW: 110 } as const;
+/**
+ * Табличка состояния в левом верхнем углу. Верхний ряд — сердце и полоска здоровья до правого поля
+ * (запас здоровья видно по делениям), нижний — эликсиры и монеты (с середины таблички).
+ * pad — поле от края таблички до содержимого со всех сторон, gap — от иконки до того, что справа, rowGap — между рядами.
+ */
+const HUD = { x: 2, y: 2, w: 132, pad: 7, gap: 4, rowGap: 4, icon: 16, barH: 8 } as const;
+const HUD_ROW1 = HUD.y + HUD.pad, HUD_ROW2 = HUD_ROW1 + HUD.icon + HUD.rowGap;
+const HUD_H = HUD_ROW2 + HUD.icon + HUD.pad - HUD.y;
+/** Золотые ромбы на концах полоски выступают за неё на столько пикселей. */
+const BAR_TIP = 3;
+const HP_BAR_X = HUD.x + HUD.pad + HUD.icon + HUD.gap + BAR_TIP;
+const HP_BAR = { x: HP_BAR_X, y: HUD_ROW1 + (HUD.icon - HUD.barH) / 2, w: HUD.x + HUD.w - HUD.pad - BAR_TIP - HP_BAR_X } as const;
+/** Сдвиг текста относительно иконки 16x16, чтобы цифры стояли по её середине. */
+const ICON_TEXT_DY = 3;
+/** Сдвиг строки текста, чтобы заглавные (7 пикселей) стояли по середине полоски. */
+const BAR_TEXT_DY = (HUD.barH - 7) / 2 - 2;
+/** Нижние плашки: рывок слева и кнопка инвентаря справа — одной высоты, с полями. */
+const PLATE = { h: 22, pad: 5, margin: 2 } as const;
+const DASH_BAR_W = 50;
+/** Зазор между табличкой состояния и лентой цели. */
+const RIBBON_GAP = 10;
 /** Здоровье на одно деление полоски. */
 const HP_PER_TICK = 20;
 
@@ -74,6 +97,8 @@ export class UIScene extends Phaser.Scene {
   /** Отметки на миникарте — поверх картинки карты. */
   private minimapMarks!: Phaser.GameObjects.Graphics;
   private modal: { spec: ChoiceSpec; sel: number; box: Phaser.GameObjects.Container } | null = null;
+  /** Окно инвентаря-рюкзака (своё, не список). */
+  private inventory: InventoryWindow | null = null;
   private closedAt = -1000;
   private objectiveText = '';
   private fpsText!: PText;
@@ -82,37 +107,45 @@ export class UIScene extends Phaser.Scene {
 
   constructor() { super({ key: SCENES.ui }); }
 
-  get modalOpen(): boolean { return this.modal !== null || this.time.now - this.closedAt < 180; }
+  get modalOpen(): boolean { return this.modal !== null || this.inventory !== null || this.time.now - this.closedAt < 180; }
 
   create(): void {
     this.toasts = [];
-    this.modal = null; this.minimap = null; this.miniImg = null; this.bannerText = null;
-    this.cameras.main.setRoundPixels(true);
+    this.modal = null; this.inventory = null; this.minimap = null; this.miniImg = null; this.bannerText = null;
+    this.cameras.main.setRoundPixels(true).setZoom(GAME.resolution).centerOn(W / 2, H / 2);
     // табличка состояния: здоровье, эликсиры, монеты — рамка рисуется один раз
-    drawPanel(this.add.graphics(), HUD.x, HUD.y, HUD.w, HUD.h, { alpha: 0.82 });
+    drawPanel(this.add.graphics(), HUD.x, HUD.y, HUD.w, HUD_H, { alpha: 0.82, rules: false });
     // мягкие свечения за иконками (под ними): сердце бьётся, эликсир и монеты мерцают
-    this.heartGlow = this.glow(HUD.x + 14, HUD.y + 14, 0xff3a5a, 0.6);
-    this.pulse(this.glow(HUD.x + 14, HUD.y + 32, 0xff5a7a, 0.5), 1400);
-    this.pulse(this.glow(HUD.x + 78, HUD.y + 32, 0xffc040, 0.5), 1900);
-    this.add.image(HUD.x + 6, HUD.y + 6, 'ui_heart').setOrigin(0, 0);
+    const left = HUD.x + HUD.pad, top = HUD_ROW1, row2 = HUD_ROW2, coins = HUD.x + HUD.w / 2 + 2;
+    this.heartGlow = this.glow(left + 8, top + 8, 0xff3a5a, 0.6);
+    this.pulse(this.glow(left + 8, row2 + 8, 0xff5a7a, 0.5), 1400);
+    this.pulse(this.glow(coins + 8, row2 + 8, 0xffc040, 0.5), 1900);
+    addIcon(this, left, top, 'ui_heart').setOrigin(0, 0);
     this.hpBar = this.add.graphics();
-    this.hpText = new PText(this, 0, HUD.barY - 2, '', { ax: 0.5 });
-    this.add.image(HUD.x + 6, HUD.y + 24, 'ui_potion').setOrigin(0, 0);
-    this.potionText = new PText(this, HUD.x + 24, HUD.y + 26, '');
-    this.add.image(HUD.x + 70, HUD.y + 24, 'castle_coin').setOrigin(0, 0);
-    this.coinText = new PText(this, HUD.x + 88, HUD.y + 26, '', { color: COLORS.gold });
+    this.hpText = new PText(this, HP_BAR.x + HP_BAR.w / 2, HP_BAR.y + BAR_TEXT_DY, '', { ax: 0.5, shine: true });
+    addIcon(this, left, row2, 'ui_potion').setOrigin(0, 0);
+    this.potionText = new PText(this, left + HUD.icon + HUD.gap, row2 + ICON_TEXT_DY, '');
+    addIcon(this, coins, row2, 'castle_coin').setOrigin(0, 0);
+    this.coinText = new PText(this, coins + HUD.icon + HUD.gap, row2 + ICON_TEXT_DY, '', { color: COLORS.gold, shine: true });
     // рывок: крылатый сапог и полоска внизу слева
-    drawPlate(this.add.graphics(), 2, H - 20, 72, 18);
-    this.dashGlow = this.glow(12, H - 11, 0x5fe0d4, 0.5);
-    this.add.image(4, H - 19, 'ui_dash').setOrigin(0, 0);
+    const plateY = H - PLATE.margin - PLATE.h, iconY = plateY + (PLATE.h - HUD.icon) / 2;
+    drawPlate(this.add.graphics(), PLATE.margin, plateY, PLATE.pad * 2 + HUD.icon + HUD.gap + BAR_TIP * 2 + DASH_BAR_W, PLATE.h);
+    this.dashGlow = this.glow(PLATE.margin + PLATE.pad + HUD.icon / 2, iconY + HUD.icon / 2, 0x5fe0d4, 0.5);
+    addIcon(this, PLATE.margin + PLATE.pad, iconY, 'ui_dash').setOrigin(0, 0);
     this.dashG = this.add.graphics();
     // кнопка инвентаря
-    drawPlate(this.add.graphics(), W - 98, H - 20, 96, 18);
-    new PText(this, W - 8, H - 18, '[I] Инвентарь', { ax: 1, color: COLORS.gold });
-    const inventoryZone = this.add.zone(W - 98, H - 20, 96, 18).setOrigin(0, 0).setInteractive({ useHandCursor: true });
-    inventoryZone.on('pointerdown', () => { if (!this.modal && this.world?.player.alive && !this.world.transitioning) this.openInventory(); });
+    // кнопка по ширине надписи, надпись — по центру
+    const invPlate = this.add.graphics();
+    const invLabel = new PText(this, 0, plateY + (PLATE.h - 7) / 2 - 2, '[I] Инвентарь', { ax: 0.5, color: COLORS.gold, shine: true });
+    const invW = Math.ceil(invLabel.textWidth) + PLATE.pad * 4, invX = W - PLATE.margin - invW;
+    invLabel.setX(invX + invW / 2);
+    drawPlate(invPlate, invX, plateY, invW, PLATE.h);
+    const inventoryZone = this.add.zone(invX, plateY, invW, PLATE.h).setOrigin(0, 0).setInteractive({ useHandCursor: true });
+    inventoryZone.on('pointerover', () => invLabel.setColor(COLORS.goldHover));
+    inventoryZone.on('pointerout', () => invLabel.setColor(COLORS.gold));
+    inventoryZone.on('pointerdown', () => { if (!this.modal && !this.inventory && this.world?.player.alive && !this.world.transitioning) this.openInventory(); });
     this.objectivePlate = this.add.graphics();
-    this.objective = new PText(this, W / 2, 4, '', { ax: 0.5, color: COLORS.text });
+    this.objective = new PText(this, W / 2, 4, '', { ax: 0.5, color: COLORS.text, shine: true });
     this.hintPlate = this.add.graphics();
     this.hint = new PText(this, W / 2, H - 26, 'WASD — ходьба   ПРОБЕЛ / ЛКМ — удар   SHIFT — рывок\nE — действие   Q — эликсир   ESC — меню   M — звук', { ax: 0.5, ay: 1, color: COLORS.dim });
     drawPlate(this.hintPlate, Math.round(W / 2 - this.hint.textWidth / 2) - 8, H - 28 - this.hint.textHeight, this.hint.textWidth + 16, this.hint.textHeight + 6, 0.7);
@@ -120,7 +153,7 @@ export class UIScene extends Phaser.Scene {
     this.bossG = this.add.graphics();
     this.bossName = new PText(this, W / 2, H - 64, '', { ax: 0.5, color: COLORS.text });
     this.miniG = this.add.graphics();
-    this.fpsText = new PText(this, 4, HUD.y + HUD.h + 3, '', { color: COLORS.good }).setVisible(false);
+    this.fpsText = new PText(this, 4, HUD.y + HUD_H + 3, '', { color: COLORS.good }).setVisible(false);
     this.damageFlash = this.add.rectangle(0, 0, W, H, 0xb02e4c, 0).setOrigin(0, 0).setDepth(-1);
 
     const kb = this.input.keyboard;
@@ -135,6 +168,8 @@ export class UIScene extends Phaser.Scene {
       this.world = null; this.ready = false;
       kb?.off('keydown'); this.game.events.off(Phaser.Core.Events.BLUR, onBlur);
     });
+    // искра по надписям HUD — редко, чтобы не отвлекать в бою
+    startGlints(this, GLINT_EVERY.hud);
     this.ready = true;
   }
 
@@ -152,6 +187,7 @@ export class UIScene extends Phaser.Scene {
     this.world = world;
     this.mode = mode;
     this.closeModal(false);
+    this.inventory?.close();
     this.minimap = null;
     this.miniImg?.destroy(); this.miniImg = null;
     this.minimapMarks?.clear();
@@ -187,12 +223,12 @@ export class UIScene extends Phaser.Scene {
     const ex = this.toasts.find((t) => t.kind === kind && t.timer > 0.4);
     if (ex) { ex.count += n; ex.timer = 2.4; ex.text.setText(n ? `+${ex.count} ${ex.label}` : ex.label); return; }
     const t = new PText(this, 24, 0, n ? `+${n} ${label}` : label, { color: COLORS.text });
-    const img = icon ? this.add.image(6, 0, icon).setOrigin(0, 0.5).setScale(0.8) : null;
+    const img = icon ? addIcon(this, 6, 0, icon, 0.8).setOrigin(0, 0.5) : null;
     this.toasts.push({ kind, count: n, text: t, icon: img, timer: 2.4, label });
   }
 
   /** Крупная надпись на алой ленте посреди экрана. */
-  banner(text: string, color: number = COLORS.gold, seconds = 2.6): void {
+  banner(text: string, color: number = COLORS.blade, seconds = 2.6): void {
     this.bannerText?.destroy();
     const label = new PText(this, 0, 0, text, { font: 'big', ax: 0.5, ay: 0.5, color });
     const ribbon = this.add.graphics();
@@ -214,24 +250,27 @@ export class UIScene extends Phaser.Scene {
     this.lastHp = session.hp;
     this.damageFlash.setAlpha(Math.max(0, this.damageFlash.alpha - dt * 1.2));
     this.hpShown += (session.hp - this.hpShown) * Math.min(1, dt * 10);
-    const barW = Math.min(HUD.barMaxW, 40 + session.maxHp * 0.6);
     this.hpBar.clear();
-    drawBar(this.hpBar, HUD.barX, HUD.barY, barW, HUD.barH, session.hp / session.maxHp, BAR_COLORS.health, this.hpShown / session.maxHp, Math.round(session.maxHp / HP_PER_TICK));
-    this.hpText.setPosition(HUD.barX + barW / 2, HUD.barY - 2).setText(`${Math.ceil(session.hp)}/${session.maxHp}`);
+    drawBar(this.hpBar, HP_BAR.x, HP_BAR.y, HP_BAR.w, HUD.barH, session.hp / session.maxHp, BAR_COLORS.health, this.hpShown / session.maxHp, Math.round(session.maxHp / HP_PER_TICK));
+    this.hpText.setText(`${Math.ceil(session.hp)}/${session.maxHp}`);
     // сердце бьётся: при малом здоровье — часто и ярко
     const low = session.hp / session.maxHp < 0.3;
     this.heartGlow.setAlpha((low ? 0.35 : 0.22) + (low ? 0.3 : 0.12) * (0.5 + 0.5 * Math.sin(this.time.now / (low ? 90 : 380))));
-    this.potionText.setText(`×${session.data.poultice}  Q`).setColor(session.data.poultice > 0 ? COLORS.text : COLORS.dim);
+    this.potionText.setText(`×${session.data.poultice}`).setColor(session.data.poultice > 0 ? COLORS.text : COLORS.dim);
     this.coinText.setText(`${session.data.coins}`);
     // рывок
     const cd = w.player.dashCd / SETTINGS.combat.dashCooldown;
     this.dashG.clear();
-    drawBar(this.dashG, 26, H - 13, 40, 4, 1 - cd, cd > 0 ? { ...BAR_COLORS.dash, light: BAR_COLORS.dash.fill } : BAR_COLORS.dash);
+    const dashX = PLATE.margin + PLATE.pad + HUD.icon + HUD.gap + BAR_TIP;
+    drawBar(this.dashG, dashX, H - PLATE.margin - PLATE.h / 2 - 2, DASH_BAR_W, 4, 1 - cd, cd > 0 ? { ...BAR_COLORS.dash, light: BAR_COLORS.dash.fill } : BAR_COLORS.dash);
     this.dashGlow.setAlpha(cd > 0 ? 0.08 : 0.3 + 0.12 * Math.sin(this.time.now / 250));
-    // цель
+    // цель: лента по центру экрана, но не заходит на табличку состояния (хвосты ленты — ещё 8 пикселей)
     this.objective.setText(this.objectiveText);
     this.objectivePlate.clear();
-    if (this.objectiveText) drawRibbon(this.objectivePlate, W / 2, 3, this.objective.textWidth + 16, 14);
+    const ribbonW = this.objective.textWidth + 16;
+    const ribbonX = Math.round(Math.max(W / 2, HUD.x + HUD.w + RIBBON_GAP + ribbonW / 2));
+    this.objective.setX(ribbonX);
+    if (this.objectiveText) drawRibbon(this.objectivePlate, ribbonX, 3, ribbonW, 14);
     this.objective.setVisible(!!this.objectiveText);
     // счётчик кадров: зелёный — плавные 60, красный — есть просадки
     if (this.fpsText.visible && (this.fpsT -= dt) <= 0) {
@@ -241,7 +280,8 @@ export class UIScene extends Phaser.Scene {
     }
     // подсказка управления
     this.hintTimer -= dt;
-    this.hint.setAlpha(this.modal ? 0 : Math.max(0, Math.min(1, this.hintTimer)));
+    this.hint.setAlpha(this.modal || this.inventory ? 0 : Math.max(0, Math.min(1, this.hintTimer)));
+    this.inventory?.update(dt);
     this.hintPlate.setAlpha(this.hint.alpha);
     // всплывашки
     this.toastG.clear();
@@ -289,13 +329,14 @@ export class UIScene extends Phaser.Scene {
     if (ev.code === 'KeyM') { const m = audio.toggleMute(); this.message(m ? 'Звук выключен' : 'Звук включён'); return; }
     if (ev.code === 'Backquote') { this.fpsText.setVisible(!this.fpsText.visible); this.fpsT = 0; return; }
     if (ev.code === 'KeyF') { if (this.scale.isFullscreen) this.scale.stopFullscreen(); else this.scale.startFullscreen(); return; }
+    if (this.inventory) { this.inventory.onKey(ev); return; }
     const m = this.modal;
     if (m) {
       const n = m.spec.options.length;
       if (ev.code === 'ArrowUp' || ev.code === 'KeyW') { this.select((m.sel + n - 1) % n); }
       else if (ev.code === 'ArrowDown' || ev.code === 'KeyS') { this.select((m.sel + 1) % n); }
       else if (ev.code === 'Enter' || ev.code === 'Space' || ev.code === 'KeyE') { this.choose(m.sel); }
-      else if (ev.code === 'Escape' || (ev.code === 'KeyI' && m.spec.title === 'Инвентарь') || (ev.code === 'KeyP' && m.spec.title === 'Пауза')) { if (m.spec.closable !== false) { this.close(); } }
+      else if (ev.code === 'Escape' || (ev.code === 'KeyP' && m.spec.title === 'Пауза')) { if (m.spec.closable !== false) { this.close(); } }
       return;
     }
     if (ev.code === 'KeyI' && this.world?.player.alive && !this.world.transitioning) { this.openInventory(); return; }
@@ -303,9 +344,10 @@ export class UIScene extends Phaser.Scene {
   }
 
   // ---------------- окна выбора ----------------
-  get isModalOpen(): boolean { return this.modal !== null; }
+  get isModalOpen(): boolean { return this.modal !== null || this.inventory !== null; }
 
   openChoice(spec: ChoiceSpec): void {
+    this.inventory?.close();
     const wasOpen = this.modal !== null;
     this.closeModal(false);
     const first = Math.max(0, spec.options.findIndex((o) => o.enabled !== false));
@@ -356,7 +398,7 @@ export class UIScene extends Phaser.Scene {
     const box = m.box;
     box.removeAll(true);
     const pw = spec.width ?? 270;
-    const rowH = 19;
+    const rowH = spec.options.length > MODAL_ROW.compactAfter ? MODAL_ROW.compact : MODAL_ROW.normal;
     const bodyLines = spec.lines ?? [];
     const bodyText = bodyLines.length ? new PText(this, 0, 0, bodyLines.join('\n'), { color: COLORS.text, maxWidth: pw - 28 }) : null;
     const bodyH = bodyText ? bodyText.textHeight + 6 : 0;
@@ -370,7 +412,7 @@ export class UIScene extends Phaser.Scene {
     const g = this.add.graphics();
     drawPanel(g, px, py, pw, ph);
     // заголовок на алой ленте поверх верхней кромки окна
-    const title = new PText(this, W / 2, py - 4, spec.title, { font: 'big', ax: 0.5, color: COLORS.gold });
+    const title = new PText(this, W / 2, py - 4, spec.title, { font: 'big', ax: 0.5, color: COLORS.blade });
     drawRibbon(g, W / 2, py - 6, Math.max(80, title.textWidth + 24), 22);
     box.add([dim, g, title]);
     let y = py + 26;
@@ -384,10 +426,10 @@ export class UIScene extends Phaser.Scene {
         hl.fillStyle(UI.clothDark, 0.9).fillRect(px + 6, ry, pw - 12, rowH - 2);
         hl.fillStyle(UI.gold, 1).fillRect(px + 6, ry, pw - 12, 1).fillRect(px + 6, ry + rowH - 3, pw - 12, 1);
         const shine = this.add.image(px + 15, ry + 8, TEXTURES.glow).setTint(0xffd070).setBlendMode(Phaser.BlendModes.ADD).setScale(0.45).setAlpha(0.45);
-        box.add([hl, shine, this.add.image(px + 15, ry + 8, 'castle_sword').setScale(0.75)]);
+        box.add([hl, shine, addIcon(this, px + 15, ry + 8, 'castle_sword', 0.75)]);
       }
-      if (o.icon) box.add(this.add.image(px + 33, ry + 8, o.icon).setScale(0.85));
-      box.add(new PText(this, px + (o.icon ? 45 : 26), ry + 3, o.label, { color: on ? (i === m.sel ? 0xffffff : COLORS.text) : COLORS.dim }));
+      if (o.icon) box.add(addIcon(this, px + 33, ry + 8, o.icon, 0.85));
+      box.add(new PText(this, px + (o.icon ? 45 : 26), ry + 3, o.label, { color: on ? (i === m.sel ? COLORS.hover : COLORS.label) : COLORS.dim }));
       if (o.cost) addCostRow(this, box, px + pw - 12 - costWidth(o.cost), ry + 3, o.cost, on);
       const zone = this.add.zone(px + 8, ry, pw - 16, rowH - 2).setOrigin(0, 0).setInteractive({ useHandCursor: true });
       zone.on('pointerover', () => this.select(i));
@@ -405,14 +447,14 @@ export class UIScene extends Phaser.Scene {
     const ids: ShopItemId[] = [...EQUIPMENT_IDS, 'potion'];
     this.openChoice({
       title: 'Лавка снабженца', width: 350,
-      lines: [`Ваш кошелёк: ${session.data.coins} монет`, 'Покупки попадают в инвентарь. Экипировка — I.'],
+      lines: [`Кошелёк: ${session.data.coins} монет · покупки — в сундук инвентаря (I)`],
       options: [
         ...ids.map((id): ChoiceOption => ({
           label: `${SHOP_ITEMS[id].name} · ${id !== 'potion' && session.data.inventory[id] ? 'куплено' : `${SHOP_ITEMS[id].price} мон.`}`,
           icon: SHOP_ITEMS[id].icon, desc: SHOP_ITEMS[id].description,
           enabled: session.canBuy(id),
           onChoose: () => {
-            if (session.buy(id)) { audio.play('pickup'); this.message('Предмет в инвентаре', SHOP_ITEMS[id].icon); }
+            if (session.buy(id)) { audio.play('pickup'); this.message('Предмет в сундуке (I)', SHOP_ITEMS[id].icon); }
             this.openShop();
           },
         })),
@@ -422,24 +464,11 @@ export class UIScene extends Phaser.Scene {
     });
   }
 
+  /** Инвентарь-рюкзак: доспехи на герое, вещи в рюкзаке, сундук (ui/InventoryWindow.ts). */
   openInventory(): void {
-    this.openChoice({
-      title: 'Инвентарь', width: 350,
-      lines: [`Урон: ${session.damage} · здоровье: ${Math.ceil(session.hp)}/${session.maxHp} · монет за врага: +${session.killBonus}`,
-        `Монеты: ${session.data.coins} · эликсиры: ${session.data.poultice}/${SETTINGS.base.poulticeMax} (Q)`],
-      options: [
-        ...EQUIPMENT_IDS.map((id): ChoiceOption => ({
-          label: `${SHOP_ITEMS[id].name} · ${!session.data.inventory[id] ? 'нет' : session.data.equipped[id] ? 'надето' : 'в сумке'}`,
-          icon: SHOP_ITEMS[id].icon, enabled: session.data.inventory[id],
-          desc: `${SHOP_ITEMS[id].description} ${session.data.inventory[id] ? 'Enter / клик — надеть или снять.' : 'Продаётся у торговца в замке.'}`,
-          onChoose: () => {
-            session.toggleEquipment(id);
-            this.openInventory();
-          },
-        })),
-        { label: 'Закрыть', onChoose: () => undefined },
-      ],
-    });
+    if (this.inventory) return;
+    this.closeModal(false);
+    this.inventory = new InventoryWindow(this, this, () => { this.inventory = null; this.closedAt = this.time.now; });
   }
 
   openPause(): void {

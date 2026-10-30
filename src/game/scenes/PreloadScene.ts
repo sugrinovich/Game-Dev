@@ -1,17 +1,17 @@
 import Phaser from 'phaser';
 import { TEXTURES } from '../configs/assets';
-import { COLORS, GAME, SCENES } from '../configs/game';
-import { EQUIPMENT_IDS, LOCATIONS, type EquipmentId } from '../configs/items';
+import { COLORS, GAME, GLINT_EVERY, SCENES } from '../configs/game';
+import { LOCATIONS, ROOM_IDS, roomEntry } from '../configs/items';
 import { ENEMY_TYPES } from '../configs/characters';
-import { outfitFor } from '../characters/Player';
 import { ensureArrowTexture } from '../characters/Skeleton';
-import { PText } from '../ui/PText';
+import { PText, startGlints } from '../ui/PText';
 import { drawDiamond, drawPlate, UI } from '../ui/Panel';
-import { ARENA_SIZE, arenaGroundKey, castleTextureJobs, HALL_GROUND_KEY, HALL_SIZE, paintCastleFront, paintCastleGround } from '../systems/CastleArt';
+import { ARENA_SIZE, arenaGroundKey, castleGroundJobs, castleTextureJobs, HALL_GROUND_KEY, HALL_SIZE, paintCastleFront, portcullisJobs, ROOM_SIZE, roomGroundKey, roomPassages } from '../systems/CastleArt';
 import { Effects } from '../systems/Effects';
-import { heroSheetJobs } from '../systems/HeroArt';
+import { heroSheetJobs, STARTER_OUTFIT } from '../systems/HeroArt';
 import { effectTextureJobs } from '../systems/MobArt';
 import { iconTextureJobs } from '../systems/IconArt';
+import { hallTextureJobs } from '../systems/HallModels';
 import { audio } from '../systems/Sfx';
 import { addTitleLogo, SiegeBackdrop, TITLE_DEPTH } from '../systems/TitleArt';
 
@@ -46,12 +46,6 @@ const TIPS = [
 /** Этап загрузки: подпись на экране и задания на отрисовку. */
 interface Stage { label: string; jobs: (() => void)[] }
 
-/** Все сочетания надетых вещей: листы героя рисуются заранее, и переодевание в игре не даёт рывка. */
-function equipmentCombos(): Record<EquipmentId, boolean>[] {
-  return Array.from({ length: 1 << EQUIPMENT_IDS.length }, (_, mask) =>
-    Object.fromEntries(EQUIPMENT_IDS.map((id, i) => [id, (mask & (1 << i)) !== 0])) as Record<EquipmentId, boolean>);
-}
-
 /**
  * Экран загрузки «Осада Бездны»: живая заставка, меч-полоса, который куют от гарды к острию,
  * и одна строка внизу — летопись осады, затем советы. Файлов нет — все текстуры рисуются здесь понемногу каждый кадр, без подвисаний.
@@ -78,7 +72,7 @@ export class PreloadScene extends Phaser.Scene {
   }
 
   create(): void {
-    this.cameras.main.setBackgroundColor(GAME.backgroundColor);
+    this.cameras.main.setBackgroundColor(GAME.backgroundColor).setZoom(GAME.resolution).centerOn(W / 2, H / 2);
     new SiegeBackdrop(this);
     this.add.image(0, 0, 'title_vignette').setOrigin(0, 0).setDepth(TITLE_DEPTH.vignette).setAlpha(0.55);
     addTitleLogo(this);
@@ -86,9 +80,10 @@ export class PreloadScene extends Phaser.Scene {
     const d = TITLE_DEPTH.ui;
     this.sword = this.add.graphics().setDepth(d);
     this.edgeGlow = this.add.image(SWORD.x, SWORD.y, TEXTURES.glow).setTint(0xff8a2a).setBlendMode(Phaser.BlendModes.ADD).setScale(0.9, 0.5).setDepth(d + 1);
-    this.status = new PText(this, W / 2, SWORD.y + 10, '', { ax: 0.5, color: COLORS.text }).setDepth(d);
+    this.status = new PText(this, W / 2, SWORD.y + 10, '', { ax: 0.5, color: COLORS.text, shine: true }).setDepth(d);
+    startGlints(this, GLINT_EVERY.menu);
     this.buildStory();
-    this.press = new PText(this, W / 2, SWORD.y + 26, 'Нажмите любую клавишу', { ax: 0.5, color: COLORS.gold }).setDepth(d).setAlpha(0);
+    this.press = new PText(this, W / 2, SWORD.y + 26, 'Нажмите любую клавишу', { ax: 0.5, color: COLORS.blade, shine: true }).setDepth(d).setAlpha(0);
 
     this.stages = this.textureStages();
     this.jobsTotal = this.stages.reduce((n, s) => n + s.jobs.length, 0);
@@ -98,16 +93,27 @@ export class PreloadScene extends Phaser.Scene {
   /** Всё, что рисуется кодом, — по этапам с понятными названиями. */
   private textureStages(): Stage[] {
     return [
-      { label: 'Возводим стены замка', jobs: castleTextureJobs(this) },
+      { label: 'Возводим стены замка', jobs: [...castleTextureJobs(this), ...hallTextureJobs(this)] },
       {
         label: 'Мостим залы и арены', jobs: [
-          () => paintCastleGround(this, HALL_GROUND_KEY, HALL_SIZE.w, HALL_SIZE.h, 'hall'),
-          ...LOCATIONS.map((loc) => () => paintCastleGround(this, arenaGroundKey(loc.theme), ARENA_SIZE.w, ARENA_SIZE.h, loc.theme)),
+          ...castleGroundJobs(this, HALL_GROUND_KEY, HALL_SIZE.w, HALL_SIZE.h, 'hall'),
           () => paintCastleFront(this, HALL_SIZE.w, HALL_SIZE.h, 'hall', null),
-          ...LOCATIONS.map((loc) => () => paintCastleFront(this, ARENA_SIZE.w, ARENA_SIZE.h, loc.theme, ARENA_SIZE.w / 2)),
+          // арены: у каждой комнаты свои проёмы (вход и выход) — одинаковые стены рисуются один раз
+          ...LOCATIONS.flatMap((loc) => loc.rooms.flatMap((room, i) => {
+            const entry = roomEntry(loc, i), pass = roomPassages(ARENA_SIZE.w, room.exit ? [entry, room.exit] : [entry]);
+            return [
+              ...castleGroundJobs(this, arenaGroundKey(loc.theme), ARENA_SIZE.w, ARENA_SIZE.h, loc.theme, pass),
+              () => paintCastleFront(this, ARENA_SIZE.w, ARENA_SIZE.h, loc.theme, pass.bottom ?? null),
+            ];
+          })),
+          ...portcullisJobs(this),
+          // комнаты тронного зала: покои, кузня, целебница — со своими стенами и проёмом в зал
+          ...ROOM_IDS.flatMap((id) => castleGroundJobs(this, roomGroundKey(id), ROOM_SIZE.w, ROOM_SIZE.h, id)),
+          ...ROOM_IDS.map((id) => () => paintCastleFront(this, ROOM_SIZE.w, ROOM_SIZE.h, id, ROOM_SIZE.w / 2)),
         ],
       },
-      { label: 'Куём доспехи героя', jobs: equipmentCombos().flatMap((equipped) => heroSheetJobs(this, outfitFor(equipped))) },
+      // заранее — стартовая одежда; другие наборы рисуются при переодевании (около 30 мс, в окне инвентаря — на паузе)
+      { label: 'Куём доспехи героя', jobs: heroSheetJobs(this, STARTER_OUTFIT) },
       { label: 'Собираем орду Бездны', jobs: Object.values(ENEMY_TYPES).flatMap((e) => heroSheetJobs(this, e.outfit, e.body)) },
       { label: 'Чеканим монеты и гербы', jobs: iconTextureJobs(this) },
       { label: 'Закаляем клинки', jobs: effectTextureJobs(this) },
@@ -120,7 +126,7 @@ export class PreloadScene extends Phaser.Scene {
     const d = TITLE_DEPTH.ui;
     const lines = [...CHRONICLE, ...TIPS.map((t) => `Совет: ${t}`)];
     drawPlate(this.add.graphics().setDepth(d), 0, H - 16, W, 16, 0.75);
-    this.story = new PText(this, W / 2, H - 14, lines[0]!, { ax: 0.5, color: 0xd8c8a8 }).setDepth(d);
+    this.story = new PText(this, W / 2, H - 14, lines[0]!, { ax: 0.5, color: COLORS.text, shine: true }).setDepth(d);
     this.time.addEvent({
       delay: STORY_EVERY * 1000, loop: true,
       callback: () => this.tweens.add({
@@ -129,7 +135,7 @@ export class PreloadScene extends Phaser.Scene {
           // летопись — один раз по порядку, дальше по кругу только советы
           this.storyIndex = this.storyIndex + 1 < lines.length ? this.storyIndex + 1 : CHRONICLE.length;
           const line = lines[this.storyIndex]!;
-          this.story.setText(line).setColor(this.storyIndex < CHRONICLE.length ? 0xd8c8a8 : COLORS.dim);
+          this.story.setText(line).setColor(this.storyIndex < CHRONICLE.length ? COLORS.text : COLORS.dim);
         },
       }),
     });

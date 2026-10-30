@@ -1,18 +1,19 @@
 import Phaser from 'phaser';
-import { COLORS, GAME, SCENES } from '../configs/game';
+import { COLORS, GAME, GLINT_EVERY, SCENES } from '../configs/game';
 import { addTitleLogo, SiegeBackdrop, TITLE_DEPTH } from '../systems/TitleArt';
 import { audio } from '../systems/Sfx';
 import { session } from '../state/Session';
-import { PText } from '../ui/PText';
+import { PText, startGlints } from '../ui/PText';
 import { drawPanel, UI } from '../ui/Panel';
+import { addIcon } from '../systems/IconArt';
 
 interface Item { label: string; enabled: boolean; run: () => void }
 type Page = 'main' | 'confirm' | 'bye';
 
 const W = GAME.width;
 const H = GAME.height;
-/** Панель меню: ширина, высота строки, верх. */
-const MENU = { w: 170, rowH: 20, top: 124 } as const;
+/** Панель меню: ширина, высота строки, верх не выше top; pennant — сколько вымпел панели выступает над первым пунктом. */
+const MENU = { w: 170, rowH: 20, top: 124, pennant: 15 } as const;
 
 
 /** Титульный экран: заставка «Осада Бездны» и меню «Начать игру / Продолжить / Выйти». */
@@ -24,18 +25,21 @@ export class MenuScene extends Phaser.Scene {
   /** Мечи-указатели слева и справа от выбранного пункта. */
   private cursors: Phaser.GameObjects.Image[] = [];
   private busy = false;
+  /** Верх первого пункта: под логотипом с отступом. */
+  private top: number = MENU.top;
 
   constructor() { super({ key: SCENES.menu }); }
 
   create(): void {
     this.busy = false;
     this.page = 'main';
-    this.cameras.main.fadeIn(500, 0, 0, 0);
+    this.cameras.main.setZoom(GAME.resolution).centerOn(W / 2, H / 2).fadeIn(500, 0, 0, 0);
     new SiegeBackdrop(this);
     this.add.image(0, 0, 'title_vignette').setOrigin(0, 0).setDepth(TITLE_DEPTH.vignette).setAlpha(0.55);
-    addTitleLogo(this);
+    this.top = Math.max(MENU.top, addTitleLogo(this) + MENU.pennant);
     this.ui = this.add.container(0, 0).setDepth(TITLE_DEPTH.ui + 10);
     this.showMain();
+    startGlints(this, GLINT_EVERY.menu);
 
     const kb = this.input.keyboard;
     kb?.on('keydown', (ev: KeyboardEvent) => this.onKey(ev));
@@ -54,11 +58,11 @@ export class MenuScene extends Phaser.Scene {
     const bw = MENU.w, rowH = MENU.rowH;
     const extra = lines.length ? lines.length * 12 + 8 : 0;
     const ph = items.length * rowH + 14 + (title ? 20 : 0) + extra;
-    const px = Math.round((W - bw) / 2), py = MENU.top;
+    const px = Math.round((W - bw) / 2), py = this.top;
     const g = this.add.graphics();
     drawPanel(g, px - 12, py - 8, bw + 24, ph, { alpha: 0.88, pennant: true });
     this.ui.add(g);
-    this.cursors = [this.add.image(0, 0, 'castle_sword'), this.add.image(0, 0, 'castle_sword').setFlipX(true)];
+    this.cursors = [addIcon(this, 0, 0, 'castle_sword'), addIcon(this, 0, 0, 'castle_sword').setFlipX(true)];
     this.ui.add(this.cursors);
     let y = py;
     if (title) { this.ui.add(new PText(this, W / 2, y - 2, title, { ax: 0.5, color: COLORS.gold })); y += 18; }
@@ -69,7 +73,7 @@ export class MenuScene extends Phaser.Scene {
       const hl = this.add.graphics();
       hl.setName(`hl${i}`);
       this.ui.add(hl);
-      const label = new PText(this, W / 2, ry + 4, it.label, { ax: 0.5, color: it.enabled ? COLORS.text : COLORS.dim });
+      const label = new PText(this, W / 2, ry + 4, it.label, { ax: 0.5, color: it.enabled ? COLORS.label : COLORS.dim, shine: it.enabled });
       label.setName(`lb${i}`);
       this.ui.add(label);
       const zone = this.add.zone(px - 4, ry, bw + 8, rowH - 2).setOrigin(0, 0).setInteractive({ useHandCursor: it.enabled });
@@ -96,7 +100,7 @@ export class MenuScene extends Phaser.Scene {
         this.cursors[0]?.setPosition(W / 2 - half, ry + 8);
         this.cursors[1]?.setPosition(W / 2 + half, ry + 8);
       }
-      label.setColor(!it.enabled ? COLORS.dim : on ? 0xffffff : COLORS.text);
+      label.setColor(!it.enabled ? COLORS.dim : on ? COLORS.hover : COLORS.label);
     });
   }
 
@@ -143,7 +147,7 @@ export class MenuScene extends Phaser.Scene {
     this.cameras.main.once(Phaser.Cameras.Scene2D.Events.FADE_OUT_COMPLETE, () => {
       this.ui.removeAll(true);
       this.add.rectangle(0, 0, W, H, 0x0b0919, 1).setOrigin(0, 0).setDepth(TITLE_DEPTH.ui + 30);
-      new PText(this, W / 2, H / 2 - 12, 'До встречи в замке!', { font: 'big', ax: 0.5, ay: 0.5, color: COLORS.gold }).setDepth(TITLE_DEPTH.ui + 31);
+      new PText(this, W / 2, H / 2 - 12, 'До встречи в замке!', { font: 'big', ax: 0.5, ay: 0.5, color: COLORS.blade }).setDepth(TITLE_DEPTH.ui + 31);
       new PText(this, W / 2, H / 2 + 14, 'Вкладку можно закрывать.', { ax: 0.5, color: COLORS.dim }).setDepth(TITLE_DEPTH.ui + 31);
       this.cameras.main.fadeIn(600, 0, 0, 0);
       audio.music('off');

@@ -23,7 +23,7 @@ abstract class SkeletonMob extends Mob {
 
 type WarriorState = 'chase' | 'windup' | 'recover';
 
-/** Скелет-мечник: идёт к игроку, замахивается (краснеет) и рубит. */
+/** Скелет-мечник: идёт к игроку, замахивается (краснеет, меч над плечом) и рубит наискось. */
 export class SkeletonWarrior extends SkeletonMob {
   private mode: WarriorState = 'chase';
   private timer = 0;
@@ -49,15 +49,17 @@ export class SkeletonWarrior extends SkeletonMob {
       }
     } else if (this.mode === 'windup') {
       this.timer -= dt;
-      this.animate(false);
+      this.windupPose(this.timer, WARRIOR.windup);
       if (this.timer <= 0) {
         this.clearTint();
         this.slash(target);
         this.mode = 'recover'; this.timer = WARRIOR.recover; this.cooldown = WARRIOR.cooldown;
+        this.recoverPose(0, this.timer);
       }
     } else {
       this.timer -= dt;
       if (this.timer <= 0) this.mode = 'chase';
+      else this.recoverPose(WARRIOR.recover - this.timer, this.timer);
     }
   }
 

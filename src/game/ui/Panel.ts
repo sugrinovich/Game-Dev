@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { COLORS } from '../configs/game';
 import { session } from '../state/Session';
 import { PText } from './PText';
+import { addIcon } from '../systems/IconArt';
 
 /*
  * Рыцарский интерфейс: тёмная воронёная сталь, золотые накладки и алое сукно.
@@ -20,6 +21,8 @@ export interface PanelOptions {
   alpha?: number;
   /** Алый вымпел с золотым крестом над верхней кромкой (главное меню). */
   pennant?: boolean;
+  /** Тонкие золотые линии внутри поля сверху и снизу (у маленьких табличек их лучше убрать — меньше тесноты). */
+  rules?: boolean;
 }
 
 /** Золотой ромб-наконечник (концы полосок, украшения). */
@@ -39,7 +42,7 @@ export function drawPanel(g: Phaser.GameObjects.Graphics, x: number, y: number, 
   // поле с утопленной кромкой и тонкой золотой линией внутри
   g.fillStyle(UI.field, opts.alpha ?? 0.96).fillRect(x + 3, y + 3, w - 6, h - 6);
   g.fillStyle(0x000000, 0.45).fillRect(x + 3, y + 3, w - 6, 1).fillRect(x + 3, y + 3, 1, h - 6);
-  g.fillStyle(UI.goldDark, 0.8).fillRect(x + 6, y + 5, w - 12, 1).fillRect(x + 6, y + h - 6, w - 12, 1);
+  if (opts.rules !== false) g.fillStyle(UI.goldDark, 0.8).fillRect(x + 6, y + 5, w - 12, 1).fillRect(x + 6, y + h - 6, w - 12, 1);
   // золотые уголки-накладки с заклёпкой
   for (const [cx, cy, sx, sy] of [[x, y, 1, 1], [x + w - 1, y, -1, 1], [x, y + h - 1, 1, -1], [x + w - 1, y + h - 1, -1, -1]] as const) {
     g.fillStyle(UI.goldDark, 1).fillRect(sx > 0 ? cx : cx - 7, sy > 0 ? cy : cy - 2, 8, 3).fillRect(sx > 0 ? cx : cx - 2, sy > 0 ? cy : cy - 7, 3, 8);
@@ -110,7 +113,7 @@ export function drawPlate(g: Phaser.GameObjects.Graphics, x: number, y: number, 
 
 /** Цена «монета + число»: зелёная, если хватает монет. Отрисовка слева направо от x. Возвращает ширину. */
 export function addCostRow(scene: Phaser.Scene, parent: Phaser.GameObjects.Container, x: number, y: number, price: number, enabled = true): number {
-  const icon = scene.add.image(x, y + 6, 'castle_coin').setScale(0.75).setOrigin(0, 0.5);
+  const icon = addIcon(scene, x, y + 6, 'castle_coin', 0.75).setOrigin(0, 0.5);
   if (!enabled) icon.setAlpha(0.5);
   const t = new PText(scene, x + 13, y + 2, `${price}`, { color: session.data.coins >= price ? COLORS.good : COLORS.bad });
   parent.add([icon, t]);

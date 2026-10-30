@@ -1,12 +1,18 @@
 import Phaser from 'phaser';
+import { GAME } from '../configs/game';
 
 /*
  * Собственный шрифт «Осады Бездны» — рисуется кодом, файлов нет.
  * ui  — пиксельные капители: строчные буквы — те же заглавные, только ниже, как надписи на щитах и плитах.
  * big — тот же рисунок вдвое крупнее со «срезом широкого пера»: у каждого штриха срезаны
- *       верхний левый и нижний правый углы, как в готическом письме.
- * Объём «запечён» в оттенках серого (тинт текста их умножает): градиент сверху вниз, тёмный контур,
- * у ui — тень вправо-вниз, у big — металлический блик и выдавленная на 2 пикселя нижняя грань.
+ *       верхний левый и нижний правый углы, как в готическом письме. Надписи (заголовки окон, ленты) — плоские,
+ *       чистая светлая сталь клинка: без затемнений, только верх чуть ярче — отблеск света.
+ * title — название игры: тот же рисунок, но объёмный — блик по верхним граням и выдавленная на 2 пикселя нижняя грань.
+ * ui — плоский, та же чистая сталь, только тёмный контур, без тени. Иногда по надписи пробегает искра (PText.glint).
+ * Цвета «запечены» в оттенках серого (тинт текста их умножает), вокруг — тёмный контур.
+ * Буква раскрашивается как раньше (градиент, блик, контур — в пикселях игры), а уже готовая цветная буква
+ * увеличивается до чёткости игры (GAME.resolution) по правилу Scale2x: полосы металла, блик и контур
+ * сохраняют прежнюю толщину, а ступеньки диагоналей и углы сглаживаются.
  */
 
 type Glyph = readonly string[];
@@ -178,6 +184,28 @@ function charset(): string[] {
   return [...letters, ...letters.toLowerCase(), ...Object.keys(MARKS)];
 }
 
+type Art = (string | null)[][];
+
+/** Увеличение готовой цветной буквы вдвое по правилу Scale2x: угол пикселя берёт цвет соседей, если там ступенька. */
+function scale2x(src: Art): Art {
+  const at = (x: number, y: number): string | null | undefined => src[y]?.[x];
+  const out: Art = Array.from({ length: src.length * 2 }, () => new Array<string | null>(src[0]!.length * 2).fill(null));
+  src.forEach((line, y) => line.forEach((p, x) => {
+    const a = at(x, y - 1) ?? null, b = at(x + 1, y) ?? null, c = at(x - 1, y) ?? null, d = at(x, y + 1) ?? null;
+    out[2 * y]![2 * x] = c === a && c !== d && a !== b ? a : p;
+    out[2 * y]![2 * x + 1] = a === b && a !== c && b !== d ? b : p;
+    out[2 * y + 1]![2 * x] = d === c && d !== b && c !== a ? c : p;
+    out[2 * y + 1]![2 * x + 1] = b === d && b !== a && d !== c ? d : p;
+  }));
+  return out;
+}
+
+/** Буква в пикселях холста: раскрашенная в пикселях игры и увеличенная Scale2x до чёткости игры. */
+function hiresArt(art: Art): Art {
+  for (let k = 1; k < GAME.resolution; k *= 2) art = scale2x(art);
+  return art;
+}
+
 /** Пиксели глифа (true — закрашен) в масштабе scale; pen — срез широкого пера для крупного шрифта. */
 function bitmap(rows: Glyph, scale: number, pen: boolean): boolean[][] {
   const at = (x: number, y: number): boolean => rows[y]?.[x] === '#';
@@ -198,13 +226,18 @@ function bitmap(rows: Glyph, scale: number, pen: boolean): boolean[][] {
   return out;
 }
 
+/** Сталь клинка сверху вниз: верх в отблеске света, дальше ровный светлый металл — без тёмных полос. */
+const BLADE = ['#ffffff', '#ffffff', '#f3f6f9', '#eef2f6', '#eef2f6', '#eaeff4', '#eaeff4'] as const;
+
 /**
  * Размеры шрифтов: scale — увеличение рисунка, spacing — промежуток между буквами, space — ширина пробела,
- * ramp — оттенки лицевой стороны сверху вниз, extrude — глубина выдавленной нижней грани (её оттенки).
+ * ramp — оттенки лицевой стороны сверху вниз, bevel — блик по верхним граням штрихов (объём),
+ * extrude — глубина выдавленной нижней грани (её оттенки; пусто — буква плоская).
  */
 export const FONTS = {
-  ui: { scale: 1, pen: false, spacing: 1, space: 3, lineHeight: 12, ramp: ['#ffffff', '#ffffff', '#e4e4e4', '#c8c8c8'], extrude: [] },
-  big: { scale: 2, pen: true, spacing: 2, space: 6, lineHeight: 22, ramp: ['#ffffff', '#f4f4f4', '#dcdcdc', '#c4c4c4', '#a8a8a8'], extrude: ['#686868', '#444444'] },
+  ui: { scale: 1, pen: false, bevel: false, spacing: 1, space: 3, lineHeight: 12, ramp: BLADE, extrude: [] },
+  big: { scale: 2, pen: true, bevel: false, spacing: 2, space: 6, lineHeight: 22, ramp: BLADE, extrude: [] },
+  title: { scale: 2, pen: true, bevel: true, spacing: 2, space: 6, lineHeight: 22, ramp: BLADE, extrude: ['#686868', '#444444'] },
 } as const;
 /** Контур и тень букв (тинт их почти не меняет — тёмное остаётся тёмным). */
 const INK = '#140f1c';
@@ -215,26 +248,27 @@ const PAD = { left: 1, top: 1, right: 2 } as const;
  * Объёмная буква: лицевая сторона с градиентом и бликом на верхних гранях штрихов,
  * выдавленная вниз «толщина» (у big), тёмный контур и тень вправо-вниз (у ui).
  */
-function shadeGlyph(bmp: boolean[][], key: FontKey): (string | null)[][] {
+function shadeGlyph(bmp: boolean[][], key: FontKey): Art {
   const f = FONTS[key];
-  const depth = f.extrude.length;
+  const extrude = f.extrude;
+  const depth = extrude.length;
   const w = bmp[0]!.length + PAD.left + PAD.right, h = bmp.length + PAD.top + depth + 2;
   const out: (string | null)[][] = Array.from({ length: h }, () => new Array<string | null>(w).fill(null));
   const on = (x: number, y: number): boolean => bmp[y]?.[x] === true;
   bmp.forEach((line, y) => line.forEach((v, x) => {
     if (!v) return;
     const shade = f.ramp[Math.min(f.ramp.length - 1, Math.floor((y / bmp.length) * f.ramp.length))]!;
-    out[y + PAD.top]![x + PAD.left] = !on(x, y - 1) && f.pen ? '#ffffff' : shade;   // блик на верхней грани штриха
+    out[y + PAD.top]![x + PAD.left] = !on(x, y - 1) && f.bevel ? '#ffffff' : shade;   // блик на верхней грани штриха
     for (let d = 1; d <= depth; d++) if (!on(x, y + d)) {
       const row = out[y + PAD.top + d]!;
-      if (row[x + PAD.left] === null) row[x + PAD.left] = f.extrude[d - 1]!;
+      if (row[x + PAD.left] === null) row[x + PAD.left] = extrude[d - 1]!;
     }
   }));
   // контур вокруг буквы и её «толщины» + тень вправо-вниз
   const solid = out.map((row) => row.map((v) => v !== null));
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     if (solid[y]![x]) continue;
-    const near = solid[y - 1]?.[x] || solid[y + 1]?.[x] || solid[y]![x - 1] || solid[y]![x + 1] || (!f.pen && solid[y - 1]?.[x - 1]);
+    const near = solid[y - 1]?.[x] || solid[y + 1]?.[x] || solid[y]![x - 1] || solid[y]![x + 1];
     if (near) out[y]![x] = INK;
   }
   return out;
@@ -251,13 +285,13 @@ interface CharData {
 function makeFont(scene: Phaser.Scene, key: FontKey): void {
   const f = FONTS[key];
   const glyphs = charset().map((ch) => ({ ch, cell: cellFor(ch) })).filter((g): g is { ch: string; cell: Cell } => g.cell !== null);
-  const W = 256, gap = 1;
+  const R = GAME.resolution, W = 256 * R, gap = 1;
   // раскладка по строкам атласа
   let x = gap, y = gap, rowH = 0;
   const placed = glyphs.map((g) => {
     const bmp = bitmap(g.cell.rows, f.scale, f.pen);
-    const art = shadeGlyph(bmp, key);
-    const w = art[0]!.length, h = art.length, advance = bmp[0]!.length + f.spacing;
+    const art = hiresArt(shadeGlyph(bmp, key));
+    const w = art[0]!.length, h = art.length, advance = (bmp[0]!.length + f.spacing) * R;
     if (x + w + gap > W) { x = gap; y += rowH + gap; rowH = 0; }
     const at = { ...g, art, x, y, w, h, advance };
     x += w + gap; rowH = Math.max(rowH, h);
@@ -276,26 +310,28 @@ function makeFont(scene: Phaser.Scene, key: FontKey): void {
   const add = (code: number, px: number, py: number, w: number, h: number, yOffset: number, advance: number): void => {
     chars[code] = {
       x: px, y: py, width: w, height: h, centerX: Math.floor(w / 2), centerY: Math.floor(h / 2),
-      xOffset: -PAD.left, yOffset, xAdvance: advance, data: {}, kerning: {},
+      xOffset: -PAD.left * GAME.resolution, yOffset, xAdvance: advance, data: {}, kerning: {},
       u0: px / W, v0: 1 - py / H, u1: (px + w) / W, v1: 1 - (py + h) / H,
     };
   };
-  for (const p of placed) add(p.ch.charCodeAt(0), p.x, p.y, p.w, p.h, p.cell.row * f.scale - PAD.top, p.advance);
-  add(32, 0, 0, 0, 0, 0, f.space + f.spacing);
+  for (const p of placed) add(p.ch.charCodeAt(0), p.x, p.y, p.w, p.h, (p.cell.row * f.scale - PAD.top) * R, p.advance);
+  add(32, 0, 0, 0, 0, 0, (f.space + f.spacing) * R);
   if (scene.cache.bitmapFont.exists(key)) scene.cache.bitmapFont.remove(key);
-  scene.cache.bitmapFont.add(key, { data: { font: key, size: f.lineHeight, lineHeight: f.lineHeight, chars }, texture: texKey, frame: null });
+  // размер шрифта — в пикселях холста; PText просит размер в пикселях игры, и буквы показываются уменьшенными
+  scene.cache.bitmapFont.add(key, { data: { font: key, size: f.lineHeight * R, lineHeight: f.lineHeight * R, chars }, texture: texKey, frame: null });
 }
 
 /** Создаёт оба шрифта игры. Вызывается один раз при запуске (BootScene). */
 export function makePixelFonts(scene: Phaser.Scene): void {
   makeFont(scene, 'ui');
   makeFont(scene, 'big');
+  makeFont(scene, 'title');
 }
 
 /** Для проверки вне игры: рисунок символа в пикселях. */
 export function glyphPixels(ch: string, key: FontKey): { row: number; advance: number; art: (string | null)[][] } | null {
   const cell = cellFor(ch);
   if (!cell) return null;
-  const bmp = bitmap(cell.rows, FONTS[key].scale, FONTS[key].pen);
-  return { row: cell.row * FONTS[key].scale - PAD.top, advance: bmp[0]!.length + FONTS[key].spacing, art: shadeGlyph(bmp, key) };
+  const bmp = bitmap(cell.rows, FONTS[key].scale, FONTS[key].pen), R = GAME.resolution;
+  return { row: (cell.row * FONTS[key].scale - PAD.top) * R, advance: (bmp[0]!.length + FONTS[key].spacing) * R, art: hiresArt(shadeGlyph(bmp, key)) };
 }

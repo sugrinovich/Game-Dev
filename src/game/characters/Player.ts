@@ -1,11 +1,11 @@
 import Phaser from 'phaser';
 import type { PlayerConfig } from '../configs/characters';
-import { HERO_ORIGIN, HERO_SHEET, TEXTURES, type PlayerDirection } from '../configs/assets';
+import { HERO_ORIGIN, TEXTURES, type PlayerDirection } from '../configs/assets';
 import { COLORS } from '../configs/game';
 import { SETTINGS } from '../configs/settings';
 import { session } from '../state/Session';
-import { EQUIPMENT_IDS, SHOP_ITEMS, type EquipmentId } from '../configs/items';
-import { ensureHeroSheet, facingOf, GEAR, heroAnimKey, playKeepingStep, STARTER_OUTFIT, type HeroAnimKind, type Outfit } from '../systems/HeroArt';
+import { EQUIPMENT, EQUIPMENT_IDS, type EquipmentId } from '../configs/items';
+import { ensureHeroSheet, facingOf, GEAR, heroAnimKey, heroAttackFrame, playKeepingStep, STARTER_OUTFIT, type HeroAnimKind, type Outfit } from '../systems/HeroArt';
 import type { Arena } from '../types';
 import { SLASH_ORIGIN } from '../systems/MobArt';
 
@@ -15,6 +15,11 @@ type Buffered = 'attack' | 'dash' | 'interact' | 'potion';
 
 /** Нажатие запоминается на это время: быстрый тап не потеряется даже при просадке кадров. */
 const INPUT_BUFFER_SECONDS = 0.18;
+/**
+ * Взмах игрока (секунды): урон — в strikeAt, весь взмах — length. frames — когда сменяются кадры удара
+ * (0 — занесено, 1–2 — рывок, 3 — удар ровно в strikeAt, 4 — проводка, 5 — возврат).
+ */
+const SWING = { strikeAt: 0.07, length: 0.24, frames: [0.03, 0.055, 0.07, 0.13, 0.2] } as const;
 const ACTION_CODES: Record<string, Buffered> = {
   Space: 'attack', KeyJ: 'attack', ShiftLeft: 'dash', ShiftRight: 'dash', KeyK: 'dash', KeyE: 'interact', Enter: 'interact', KeyQ: 'potion',
 };
@@ -23,9 +28,8 @@ const ACTION_CODES: Record<string, Buffered> = {
 export function outfitFor(equipped: Record<EquipmentId, boolean>): Outfit {
   const outfit: Outfit = { ...STARTER_OUTFIT };
   for (const id of EQUIPMENT_IDS) {
-    if (!equipped[id]) continue;
-    const wear = SHOP_ITEMS[id].wear;
-    outfit[GEAR[wear].slot] = wear;
+    const wear = EQUIPMENT[id].wear;
+    if (equipped[id] && wear) outfit[GEAR[wear].slot] = wear;
   }
   return outfit;
 }
@@ -208,7 +212,8 @@ export class Player extends Phaser.GameObjects.Sprite {
     this.updateAttack(dt);
 
     this.checkGearChange();
-    playKeepingStep(this, this.animKey(moving ? 'walk' : 'idle'));
+    if (this.attackT > 0) this.showSwing();
+    else playKeepingStep(this, this.animKey(moving ? 'walk' : 'idle'));
 
     // визуальные эффекты: мигание после урона и «поза» взмаха
     this.setDepth(this.y);
@@ -219,23 +224,33 @@ export class Player extends Phaser.GameObjects.Sprite {
 
   private updateAttack(dt: number): void {
     if (this.attackT <= 0) {
-      this.setAngle(0).setScale(this.config.displaySize / HERO_SHEET.frameSize);
+      this.setAngle(0).setScale(this.config.displaySize / this.width);
       return;
     }
     this.attackT += dt;
     const t = this.attackT;
-    if (!this.struck && t >= 0.07) {
+    if (!this.struck && t >= SWING.strikeAt) {
       this.struck = true;
       const hit = this.arena.playerStrike(this.x, this.y - 8, this.aimX, this.aimY, SETTINGS.combat.attackRange, SETTINGS.combat.attackHalfArc, session.damage);
       if (hit > 0) this.arena.hitStop(SETTINGS.combat.hitStopMs);
     }
-    const k = Math.min(1, t / 0.24);
+    const k = Math.min(1, t / SWING.length);
     const lean = Math.sin(k * Math.PI) * 9;
     this.setAngle((this.aimX >= 0 ? 1 : -1) * lean * (this.aimX === 0 ? 0 : 1));
     const sq = Math.sin(k * Math.PI) * 0.08;
-    const base = this.config.displaySize / HERO_SHEET.frameSize;
+    const base = this.config.displaySize / this.width;
     this.setScale(base * (1 + sq), base * (1 - sq * 0.8));
-    if (t >= 0.24) this.attackT = 0;
+    if (t >= SWING.length) this.attackT = 0;
+  }
+
+  /** Кадр удара по времени взмаха: оружие в руке замахивается и бьёт в сторону прицела. */
+  private showSwing(): void {
+    let k = 0;
+    while (k < SWING.frames.length && this.attackT >= SWING.frames[k]!) k++;
+    const frame = heroAttackFrame(this.facing, k);
+    if (!this.texture.has(frame)) return;
+    this.anims.stop();
+    this.setFrame(frame);
   }
 
   private tryDash(dx: number, dy: number): void {

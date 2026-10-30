@@ -25,7 +25,13 @@ export function tone(hex: string, k: number): string {
 const LIGHT_DIR = { x: -0.5, y: -0.62, z: 0.6 } as const;
 /** Ступени тона материала: блик, свет, основной, тень, глубокая тень. */
 export type Ramp = readonly [string, string, string, string, string];
-export function ramp(base: string): Ramp { return [tone(base, 0.55), tone(base, 0.25), base, tone(base, -0.3), tone(base, -0.6)]; }
+/** Готовые палитры: одна и та же палитра не пересчитывается (текстуры 3D-моделей спрашивают её на каждый пиксель). */
+const rampCache = new Map<string, Ramp>();
+export function ramp(base: string): Ramp {
+  let r = rampCache.get(base);
+  if (!r) { r = [tone(base, 0.55), tone(base, 0.25), base, tone(base, -0.3), tone(base, -0.6)]; rampCache.set(base, r); }
+  return r;
+}
 /** Номер ступени тона для нормали (nx, ny, nz): чем больше света падает, тем светлее. */
 export function lit(nx: number, ny: number, nz: number): number {
   const d = nx * LIGHT_DIR.x + ny * LIGHT_DIR.y + nz * LIGHT_DIR.z;

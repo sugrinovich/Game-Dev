@@ -4,10 +4,15 @@ import { COLORS, DEPTH } from '../configs/game';
 import { TEXTURES, type PlayerDirection } from '../configs/assets';
 import { SETTINGS } from '../configs/settings';
 import { session } from '../state/Session';
-import { ensureHeroSheet, facingOf, heroAnimKey, heroOrigin, playKeepingStep } from '../systems/HeroArt';
+import { ensureHeroSheet, facingOf, heroAnimKey, heroAttackFrame, heroOrigin, playKeepingStep } from '../systems/HeroArt';
 import type { Arena, Point } from '../types';
 
 const SPEED_VARIATION = { min: 0.9, max: 1.15 } as const;
+/**
+ * Кадры удара по времени (секунды): в начале замаха (доля raise) оружие поднимается, потом держится занесённым;
+ * за before до удара — рывок; после удара impact секунд — кадр удара, затем проводка, за back до конца паузы — возврат.
+ */
+const SWING = { raise: 0.3, before: 0.1, impact: 0.12, back: 0.12 } as const;
 
 export interface MobVariant { scale?: number; hpMul?: number }
 
@@ -62,6 +67,24 @@ export abstract class Mob extends Phaser.GameObjects.Sprite {
 
   /** Ходьба или покой в текущую сторону; при повороте шаг не сбивается. */
   protected animate(walking: boolean): void { playKeepingStep(this, heroAnimKey(this.sheet, walking ? 'walk' : 'idle', this.facing)); }
+
+  /** Замах: left — секунд до удара, total — длина замаха. */
+  protected windupPose(left: number, total: number): void {
+    this.strikeFrame(left > total * (1 - SWING.raise) ? 5 : left > SWING.before ? 0 : left > SWING.before / 2 ? 1 : 2);
+  }
+
+  /** После удара: since — секунд с удара, left — секунд до конца паузы. */
+  protected recoverPose(since: number, left: number): void {
+    this.strikeFrame(since < SWING.impact ? 3 : left > SWING.back ? 4 : 5);
+  }
+
+  /** Кадр удара оружием в руке; у кого нет оружия ближнего боя — просто стоит. */
+  private strikeFrame(k: number): void {
+    const frame = heroAttackFrame(this.facing, k);
+    if (!this.texture.has(frame)) { this.animate(false); return; }
+    this.anims.stop();
+    this.setFrame(frame);
+  }
 
   /** Шаг в направлении (dx, dy). Возвращает true, если упёрся в препятствие. */
   protected step(dt: number, dx: number, dy: number, speedMul = 1): boolean {
