@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { GAME } from '../configs/game';
-import { MODEL_AXES, renderModel, type Axes, type Mark, type Paint, type Part, type Shade, type Surface, type Vec, type View } from './Rig3D';
+import { add, cross, MODEL_AXES, mul, norm, renderModel, type Axes, type Mark, type Paint, type Part, type Shade, type Surface, type Vec, type View } from './Rig3D';
 import { addOutline, addVolume, ramp, tone, type Ramp } from './Volume';
 
 /*
@@ -285,6 +285,63 @@ function banner(f: number): Model {
   return { parts };
 }
 
+// ---------------- разломы Бездны на арене ----------------
+/**
+ * 3D-разломы первой арены — не как трещина под костром тронного зала: на задней стене — рваная дыра во тьму с лиловыми
+ * кристаллами по краю и выбитыми камнями; в полу — воронка: вздыбленные плиты пола, кристаллы торчат наружу, внутри тьма.
+ * Размеры текстур (пиксели игры) и где у них точка опоры (у стены — низ на линии пола, у воронки — середина в полу).
+ */
+export const ARENA_RIFTS = {
+  wall: { key: 'arena_wall_rift', w: 48, h: 62, anchor: { x: 24, y: 60 } },
+  floor: { key: 'arena_floor_rift', w: 96, h: 60, anchor: { x: 48, y: 40 } },
+} as const;
+const CRYSTAL = ramp('#8a3ad0'), CRYSTAL_TIP = ramp('#d8a8ff'), RIFT_STONE = ramp('#3a4054'), RIFT_SLAB = ramp('#4b5265');
+
+/** Тьма разлома: чёрная середина, лиловый ободок (r — расстояние от середины, 0..1). */
+function voidShade(r: number): Shade { return r < 0.5 ? '#07040c' : r < 0.78 ? '#1c0b34' : '#5a22a0'; }
+
+/** Кристалл-осколок от base в сторону dir длиной len: четырёхгранный, сужается к светлому острию. */
+function crystal(base: Vec, dir: Vec, len: number, w: number): Part {
+  const u = norm(dir), side = norm(cross(u, Math.abs(u[2]) > 0.9 ? [1, 0, 0] : [0, 0, 1])), fwd = cross(side, u);
+  return box(add(base, mul(u, len / 2)), [w, len / 2, w * 0.75], (s) => {
+    if (s.y > 0.15 && Math.abs(s.x) > (1 - s.y) / 0.85) return null;
+    return s.y > 0.45 ? CRYSTAL_TIP : CRYSTAL;
+  }, [side, u, fwd]);
+}
+
+/** Разлом в задней стене: тьма, кольцо сколотого камня, кристаллы по краю наружу и вперёд, выбитые камни вокруг. */
+function wallRift(): Model {
+  const cy = 30, rx = 7, ry = 17, parts: Part[] = [
+    ball([0, cy, -0.6], [rx + 3, ry + 3.5, 1], (s) => (Math.hypot(s.x, s.y) > 0.6 ? RIFT_STONE : null)),
+    ball([0, cy, 0], [rx, ry, 1.6], (s) => voidShade(Math.hypot(s.x, s.y))),
+  ];
+  for (let i = 0; i < 11; i++) {
+    const a = (i / 11) * Math.PI * 2 + hash(i, 1, 7) * 0.4, len = 5 + hash(i, 2, 7) * 6;
+    parts.push(crystal([Math.cos(a) * (rx + 0.5), cy + Math.sin(a) * (ry + 0.5), 0.6], [Math.cos(a) * 0.8, Math.sin(a) * 0.5, 0.55], len, 1.1));
+  }
+  for (let i = 0; i < 7; i++) {
+    const a = (i / 7) * Math.PI * 2 + 0.3, d = 1.45 + hash(i, 3, 7) * 0.25;
+    parts.push(box([Math.cos(a) * rx * d * 1.3, cy + Math.sin(a) * ry * d, 0.8], [1.8 + hash(i, 4, 7), 1.3, 1.2], RIFT_STONE, yaw(hash(i, 5, 7) - 0.5)));
+  }
+  return { parts };
+}
+
+/** Разлом в полу: воронка тьмы, вокруг вздыбленные наружу плиты пола, из глубины торчат кристаллы. */
+function floorRift(): Model {
+  const R = 22, parts: Part[] = [ball([0, 0, 0], [R, 0.5, R], (s) => voidShade(Math.hypot(s.x, s.z)))];
+  for (let i = 0; i < 10; i++) {
+    const a = (i / 10) * Math.PI * 2 + hash(i, 1, 9) * 0.3, out: Vec = [Math.cos(a), 0, Math.sin(a)];
+    const up = norm([out[0] * 0.55, 1, out[2] * 0.55]), tangent: Vec = [-out[2], 0, out[0]];
+    parts.push(box(add(mul(out, R + 2), [0, 1.4, 0]), [4.2, 1.2, 3.2], RIFT_SLAB, [tangent, up, cross(tangent, up)]));
+  }
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2 + 0.5, len = 9 + hash(i, 2, 9) * 8;
+    parts.push(crystal([Math.cos(a) * 10, -0.5, Math.sin(a) * 10], [Math.cos(a) * 0.5, 1, Math.sin(a) * 0.5], len, 1.6));
+  }
+  parts.push(crystal([1, -0.5, 0], [0.15, 1, 0.1], 15, 1.9), crystal([-3, -0.5, 2], [-0.3, 1, 0.2], 11, 1.5), crystal([3, -0.5, -2], [0.3, 1, -0.2], 10, 1.4));
+  return { parts };
+}
+
 /**
  * Торговец 52x40 сидит у колонны на ящике: перед ним коврик с товаром (зелья, шлем, меч, монеты, свиток),
  * рядом заплечный мешок со скаткой; дышит, моргает, подбрасывает монету.
@@ -391,6 +448,8 @@ export function propTextureJobs(scene: Phaser.Scene): (() => void)[] {
     ...sheet('castle_merchant', 52, 40, ANIM.merchant, { x: 26, y: 31 }, merchant, MERCHANT_FACING),
     ...sheet('cat_run', 20, 16, ANIM.catRun, { x: 10, y: 15 }, catRun),
     ...sheet('cat_sit', 20, 16, ANIM.catSit, { x: 10, y: 15 }, catSit),
+    ...modelSheetJobs(scene, ARENA_RIFTS.wall.key, ARENA_RIFTS.wall.w, ARENA_RIFTS.wall.h, 1, 1, ARENA_RIFTS.wall.anchor, wallRift),
+    ...modelSheetJobs(scene, ARENA_RIFTS.floor.key, ARENA_RIFTS.floor.w, ARENA_RIFTS.floor.h, 1, 1, ARENA_RIFTS.floor.anchor, floorRift),
   ];
 }
 

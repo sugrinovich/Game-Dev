@@ -120,6 +120,9 @@ export class Player extends Phaser.GameObjects.Sprite {
     this.arena.fx.burst({ x: this.x, y: this.y - 12, count: 14, speed: [10, 40], life: [0.4, 0.8], size: [1, 3], tints: [0xf2d060, 0xfff0a0, 0xffffff], gravity: -20, depth: this.y + 5 });
   }
 
+  /** Множитель скорости шага от окружения (разлом в полу замедляет); сцена задаёт его каждый кадр, 1 — обычный шаг. */
+  speedMul = 1;
+
   get facingVec(): { x: number; y: number } { return { x: this.aimX, y: this.aimY }; }
 
   /** Перенос (например, к трону после отдыха): вместе с тенью, лицом к камере, в покое. */
@@ -203,7 +206,7 @@ export class Player extends Phaser.GameObjects.Sprite {
       if (Math.random() < 0.7) this.arena.fx.burst({ x: this.x, y: this.y - 6, count: 1, speed: [0, 8], life: [0.15, 0.3], size: [3, 5], tints: [0xb8fff4, 0xffffff], depth: this.y - 1 });
       moving = true;
     } else if (len > 0) {
-      const slow = this.attackT > 0 ? 0.45 : 1;
+      const slow = (this.attackT > 0 ? 0.45 : 1) * this.speedMul;
       this.arena.move(this, dx * this.config.speed * slow * dt, dy * this.config.speed * slow * dt, this.config.radius);
       moving = true;
       this.setAim(dx, dy);

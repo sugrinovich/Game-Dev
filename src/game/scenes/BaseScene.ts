@@ -1,16 +1,14 @@
 import Phaser from 'phaser';
 import { TEXTURES } from '../configs/assets';
 import { COLORS, DEPTH, SCENES } from '../configs/game';
-import { CHEST, LOCATIONS, ROOM_IDS, ROOMS, type LocationId, type RoomId } from '../configs/items';
+import { ARENA_FLOORS, CHEST, LOCATIONS, RATING_INFO, ROOM_IDS, ROOMS, type LocationId, type RoomId } from '../configs/items';
 import { AbyssSmoke } from '../systems/AbyssSmoke';
 import { audio } from '../systems/Sfx';
-import { SETTINGS } from '../configs/settings';
 import { PText } from '../ui/PText';
 import { addCastleAmbience, addCastleFront, addCastleGround, HALL_DOOR_X, HALL_FIRE, HALL_GROUND_KEY, HALL_SIZE, paintCastleGround, ROOM_BOUNDS, WALL_BANNER } from '../systems/CastleArt';
 import { textureResolution } from '../systems/CastleModels';
 import { MapBounds } from '../systems/MapBounds';
 import { session, type Report } from '../state/Session';
-import { formatTime, type ExpeditionMode } from './ExpeditionScene';
 import { WorldScene } from './WorldScene';
 import type { ChoiceOption } from './UIScene';
 
@@ -36,7 +34,7 @@ const RIFT = { bolt: { every: [1.4, 3.2], reach: [70, 110], ms: 130 }, sparkEver
 /** Где появляется герой (на сколько пикселей ниже трона, двери или костра). */
 const SPAWN_GAP = { throne: 46, door: 26, fire: 62 } as const;
 /** Вкладки разлома: режимы. */
-const RIFT_TABS = ['Сюжет', 'Рейтинг'] as const;
+const RIFT_TABS = ['Арены', 'Рейтинг'] as const;
 /** Искры у трона после отдыха — когда экран уже светлеет (мс от начала отдыха). */
 const REST_FX_DELAY = 3900;
 /** Котик в зале: бегает к случайным точкам пола, иногда садится отдохнуть. Скорость — пиксели в секунду. */
@@ -326,39 +324,37 @@ export class BaseScene extends WorldScene {
    */
   private openExpeditionBoard(tab = 0): void {
     const story = this.storyOptions(), rating = this.ratingOptions();
+    const kinds = session.ratingMobs.length;
     this.ui.openChoice({
       title: 'Разлом Бездны', width: 360,
       tabs: { labels: RIFT_TABS, active: tab, onSelect: (i) => this.openExpeditionBoard(i) },
       lines: tab === 0
-        ? [`Урон: ${session.damage} · здоровье: ${session.hp}/${session.maxHp} · эликсиров: ${session.data.poultice}/${SETTINGS.base.poulticeMax}`]
-        : [session.data.ratingBest ? `Рекорд: ${formatTime(session.data.ratingBest)}` : 'Рекорда пока нет.'],
+        ? []
+        : [`Доступно врагов: ${kinds ? `${kinds} ${kinds === 1 ? 'вид' : kinds < 5 ? 'вида' : 'видов'}` : 'пока нет — пройдите арену'}`],
       options: tab === 0 ? story : rating,
       sizeLike: story.length >= rating.length ? story : rating,
       closeButton: 'Остаться в замке',
     });
   }
 
-  /** «Сюжет»: арены по очереди — следующая открывается после победы над боссом предыдущей. */
+  /** «Арены»: уровни по очереди — следующий открывается после победы над боссом предыдущего; рекорд — этажи подряд. */
   private storyOptions(): ChoiceOption[] {
     return LOCATIONS.map((loc) => {
-      const unlocked = session.isUnlocked(loc.id);
+      // ещё не сделанные (и закрытые) арены — «скоро»; у открытых — рекорд этажей подряд: «7/10 подряд»
+      const open = session.isUnlocked(loc.id) && !loc.soon;
       return {
-        label: `${loc.level}. ${loc.name}${session.data.cleared.includes(loc.id) ? ' · пройдено' : unlocked ? '' : ' · закрыто'}`,
-        desc: unlocked ? `${loc.description} Награда: ${loc.reward} монет.` : 'Победите всех врагов и босса предыдущей арены.',
-        enabled: unlocked,
+        label: `${loc.level}. ${loc.name} · ${open ? `${session.data.arenaBest[loc.id] ?? 0}/${ARENA_FLOORS} подряд` : 'скоро'}`,
+        desc: open ? `${loc.description} Награда: ${loc.reward} монет.` : loc.soon ? loc.description : 'Победите всех врагов и босса предыдущей арены.',
+        enabled: open,
         onChoose: () => { this.startExpedition({ location: loc.id }); },
       };
     });
   }
 
   /** «Рейтинг»: бой на время в центре арены; открыт после первой пройденной арены. */
+  /** «Рейтинг» — будущий забег (тайный рынок, предметы на выбор): пока только описание, начать нельзя. */
   private ratingOptions(): ChoiceOption[] {
-    const open = session.ratingMobs.length > 0;
-    return [{
-      label: open ? 'Начать бой на время' : 'Бой на время · закрыто', enabled: open,
-      desc: open ? 'Вы в центре арены, волны без конца — враги из пройденных арен сюжета.' : 'Откроется, когда пройдёте первую арену сюжета.',
-      onChoose: () => { this.startExpedition({ mode: 'rating' }); },
-    }];
+    return [{ label: 'Начать забег · скоро', enabled: false, desc: RATING_INFO, onChoose: () => undefined }];
   }
 
   /** Раненым в разлом — сначала вопрос: «Нет» отправляет отдохнуть у трона. */
@@ -374,7 +370,7 @@ export class BaseScene extends WorldScene {
     });
   }
 
-  private startExpedition(data: { location?: LocationId; mode?: ExpeditionMode }): void {
+  private startExpedition(data: { location?: LocationId }): void {
     session.clearRun();
     audio.play('portal');
     this.goTo(SCENES.expedition, data);
@@ -382,7 +378,7 @@ export class BaseScene extends WorldScene {
 
   private showReport(r: Report): void {
     const lines: string[] = [];
-    if (r.rating) lines.push(`Вы продержались: ${formatTime(r.rating.time)}.`, r.rating.record ? 'Новый рекорд!' : `Рекорд: ${formatTime(session.data.ratingBest)}.`);
+    if (r.floors) lines.push(`Пройдено этажей подряд: ${r.floors.count} из ${ARENA_FLOORS}.${r.floors.record ? ' Новый рекорд!' : ''}`);
     lines.push(`Побеждено врагов: ${r.kills}.`);
     lines.push(r.coins > 0 ? `Заработано монет: ${r.coins}. Они уже в кошельке.` : 'Увы, но вы ничего не заработали.');
     if (r.cleared) lines.push('Арена пройдена! Прогресс сохранён.');

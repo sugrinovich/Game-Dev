@@ -89,29 +89,33 @@ export const SHOP_ITEMS: Record<ShopItemId, ShopItem> = EQUIPMENT;
 export const ECONOMY = { startingCoins: 30, mobCoins: 6, bossCoins: 30 } as const;
 
 export type LocationId = 'courtyard' | 'crypt' | 'forge';
+/** Этажей на арене (пока — до 10): на каждом своя волна, на последнем — босс. */
+export const ARENA_FLOORS = 10;
 /**
- * Арена сюжета — площадка в четырёх стенах: волны врагов (сколько в каждой), после последней — босс. У каждой арены
- * свой будущий босс (по нему и название); пока все три идут на общей старой арене с Королём Бездны.
- * mobs — какие враги приходят на этой арене: из пройденных арен собирается орда режима «Рейтинг».
+ * Арена — уровень (их будет много подряд): этажи один за другим — на каждом волна врагов (firstWave на первом,
+ * на perFloor больше на каждом следующем), на последнем (ARENA_FLOORS) — босс. Рекорд — сколько этажей пройдено подряд.
+ * mobs — какие враги приходят; rifts — разломы Бездны: объёмный разлом на задней стене и замедляющие разломы в полу.
  */
 export interface LocationConfig {
   id: LocationId; name: string; level: number; stars: number; description: string;
   theme: 'courtyard' | 'crypt' | 'forge';
-  waves: number[]; hpMultiplier: number; reward: number;
+  firstWave: number; perFloor: number; hpMultiplier: number; reward: number;
   mobs: readonly EnemyTypeId[];
+  rifts?: { wall: boolean; floor: boolean };
+  /** Арена ещё не сделана: в меню «скоро», войти нельзя. */
+  soon?: boolean;
 }
 export const LOCATIONS: LocationConfig[] = [
-  { id: 'courtyard', name: 'Арена Короля Бездны', level: 1, stars: 1, theme: 'courtyard', mobs: ['skeleton', 'archer', 'orc'],
-    description: 'Три волны нежити и орков, в конце — Король Бездны.', hpMultiplier: 1, reward: 25, waves: [3, 4, 5] },
+  { id: 'courtyard', name: 'Арена Короля Бездны', level: 1, stars: 1, theme: 'courtyard', mobs: ['skeleton', 'archer', 'orc'], rifts: { wall: true, floor: true },
+    description: 'Зал замка, расколотый Бездной: разломы в полу замедляют. На десятом этаже — Король Бездны.', hpMultiplier: 1, reward: 25, firstWave: 2, perFloor: 1 },
   { id: 'crypt', name: 'Арена Арахнидового монстра', level: 2, stars: 2, theme: 'crypt', mobs: ['skeleton', 'archer', 'orc', 'ogre'],
-    description: 'Четыре волны, приходят огры. Своя арена и босс — скоро, пока бой на старой арене.', hpMultiplier: 1.3, reward: 40, waves: [4, 5, 5, 6] },
+    soon: true, description: 'Приходят огры. Своя арена и босс — скоро.', hpMultiplier: 1.3, reward: 40, firstWave: 3, perFloor: 1 },
   { id: 'forge', name: 'Арена Магмового правителя', level: 3, stars: 3, theme: 'forge', mobs: ['skeleton', 'archer', 'orc', 'ogre'],
-    description: 'Пять волн и разъярённый босс. Своя арена — скоро, пока бой на старой арене.', hpMultiplier: 1.6, reward: 60, waves: [5, 5, 6, 6, 7] },
+    soon: true, description: 'Разъярённый босс на десятом этаже. Своя арена — скоро.', hpMultiplier: 1.6, reward: 60, firstWave: 4, perFloor: 1 },
 ];
 
 /**
- * «Рейтинг» — бой на время: герой в точке посередине арены, волны без конца. Арена (тема) рейтинга; первая волна
- * и прирост врагов с каждой волной; через сколько секунд приходит следующая, даже если прежняя не добита;
- * на сколько крепче враги с каждой волной.
+ * «Рейтинг» — будущий забег: все доступные враги, старт с увеличенной сумкой, мечом и полным набором доспехов,
+ * после волн — тайный рынок (один предмет из трёх). Пока только описание в разломе.
  */
-export const RATING = { location: 'courtyard' as LocationId, firstWave: 3, perWave: 1, every: 14, hpPerWave: 0.08 } as const;
+export const RATING_INFO = 'Забег со всеми доступными врагами. Старт: увеличенная сумка, меч и полный набор доспехов. После волн открывается тайный рынок — выберите один предмет из трёх.';

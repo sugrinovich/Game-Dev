@@ -1,6 +1,6 @@
 import { GAME } from '../configs/game';
 import { SETTINGS } from '../configs/settings';
-import { BAG_START, CHEST, ECONOMY, EQUIPMENT, EQUIPMENT_IDS, LOCATIONS, POCKETS, ROOM_IDS, ROOMS, SHOP_ITEMS, type BagSize, type EquipmentId, type ItemStat, type LocationId, type RoomId, type ShopItemId } from '../configs/items';
+import { ARENA_FLOORS, BAG_START, CHEST, ECONOMY, EQUIPMENT, EQUIPMENT_IDS, LOCATIONS, POCKETS, ROOM_IDS, ROOMS, SHOP_ITEMS, type BagSize, type EquipmentId, type ItemStat, type LocationId, type RoomId, type ShopItemId } from '../configs/items';
 import type { EnemyTypeId } from '../configs/characters';
 
 /** Место предмета в рюкзаке: левая верхняя клетка и поворот (четверти оборота по часовой стрелке). */
@@ -27,8 +27,8 @@ export interface SaveData {
   tips: string[];
   /** Основное оружие — его герой держит в руке (из оружия в сумке); null — в руке палка, как кулаки. */
   mainWeapon: EquipmentId | null;
-  /** Рекорд режима «Рейтинг»: сколько секунд герой продержался (0 — ещё не играл). */
-  ratingBest: number;
+  /** Рекорд каждой арены: больше всего этажей, пройденных подряд за одну вылазку. */
+  arenaBest: Partial<Record<LocationId, number>>;
 }
 
 const none = (): Record<EquipmentId, boolean> => Object.fromEntries(EQUIPMENT_IDS.map((id) => [id, false])) as Record<EquipmentId, boolean>;
@@ -58,13 +58,13 @@ function fresh(): SaveData {
     cleared: [],
     tips: [],
     mainWeapon: null,
-    ratingBest: 0,
+    arenaBest: {},
   };
 }
 
 /** Итоги вылазки для окна отчёта в лагере. */
-/** Итоги вылазки; у «Рейтинга» — ещё сколько продержался (с) и побит ли рекорд. */
-export interface Report { died: boolean; kills: number; king: boolean; coins: number; cleared: boolean; rating?: { time: number; record: boolean } }
+/** Итоги вылазки; floors — сколько этажей пройдено подряд и побит ли рекорд арены. */
+export interface Report { died: boolean; kills: number; king: boolean; coins: number; cleared: boolean; floors?: { count: number; record: boolean } }
 
 /** Всё, что игра помнит: сохранение + текущая вылазка. Один общий объект на игру. */
 class Session {
@@ -104,7 +104,7 @@ class Session {
         cleared: Array.isArray(parsed.cleared) ? parsed.cleared.filter((id) => LOCATIONS.some((l) => l.id === id)) : [],
         tips: Array.isArray(parsed.tips) ? parsed.tips.filter((t) => typeof t === 'string') : [],
         mainWeapon: EQUIPMENT_IDS.find((id) => id === parsed.mainWeapon) ?? null,
-        ratingBest: Math.max(0, Math.floor(Number(parsed.ratingBest) || 0)),
+        arenaBest: Object.fromEntries(LOCATIONS.filter((l) => Number(parsed.arenaBest?.[l.id]) > 0).map((l) => [l.id, Math.min(ARENA_FLOORS, Math.floor(Number(parsed.arenaBest![l.id])))])),
       };
       this.data.coins = Number.isFinite(this.data.coins) ? Math.max(0, Math.floor(this.data.coins)) : base.coins;
       this.data.poultice = Math.max(0, Math.min(SETTINGS.base.poulticeMax, Math.floor(Number(this.data.poultice) || 0)));
@@ -290,13 +290,12 @@ class Session {
     return [...mobs];
   }
 
-  /** Конец боя «Рейтинга»: обычные итоги вылазки плюс время; лучшее время запоминается. */
-  finishRating(died: boolean, seconds: number): Report {
-    const time = Math.floor(seconds), record = time > this.data.ratingBest;
-    if (record) this.data.ratingBest = time;
-    const report = this.finishRun(died, false);
-    report.rating = { time, record };
-    return report;
+  /** Конец вылазки: пройдено floors этажей подряд — запоминается больший результат. Возвращает, побит ли рекорд. */
+  recordArenaFloors(id: LocationId, floors: number): { count: number; record: boolean } {
+    const record = floors > (this.data.arenaBest[id] ?? 0);
+    if (record) this.data.arenaBest[id] = floors;
+    this.save();
+    return { count: floors, record };
   }
 
   isUnlocked(id: LocationId): boolean {

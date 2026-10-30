@@ -37,7 +37,8 @@ export function arenaGroundKey(theme: CastleTheme): string { return `arena-groun
 export function roomGroundKey(theme: CastleTheme): string { return `room-ground-${theme}`; }
 const PALETTES = {
   hall: { floor: ['#424956', '#48505e', '#4e5663'], wall: '#343b49', trim: '#bd9856', cloth: '#762e40', light: '#97b7d1' },
-  courtyard: { floor: ['#605f59', '#69685f', '#727066'], wall: '#494c50', trim: '#bd9856', cloth: '#354f68', light: '#9dbbce' },
+  // первая арена — в стиле замка: те же камни, что в тронном зале, лиловый свет Бездны
+  courtyard: { floor: ['#40465a', '#454c5f', '#4b5265'], wall: '#323849', trim: '#bd9856', cloth: '#5a2e6a', light: '#b090e0' },
   crypt: { floor: ['#343e4b', '#394554', '#414d5b'], wall: '#292f40', trim: '#8499b5', cloth: '#3d3a69', light: '#74b8ca' },
   forge: { floor: ['#4c3e40', '#544447', '#5e4a48'], wall: '#382e36', trim: '#c58b4e', cloth: '#7a3033', light: '#e7935a' },
   smithy: { floor: ['#3e3634', '#443b38', '#4b413c'], wall: '#34292c', trim: '#c58b4e', cloth: '#6a2a24', light: '#e7935a' },

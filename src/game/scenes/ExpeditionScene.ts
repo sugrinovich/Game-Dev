@@ -4,13 +4,15 @@ import { AbyssKing } from '../characters/AbyssKing';
 import { ENEMY_TYPES, type EnemyTypeId } from '../configs/characters';
 import { TEXTURES } from '../configs/assets';
 import { COLORS, DEPTH, SCENES } from '../configs/game';
-import { ECONOMY, LOCATIONS, RATING, type LocationConfig, type LocationId } from '../configs/items';
+import { ARENA_FLOORS, ECONOMY, LOCATIONS, type LocationConfig, type LocationId } from '../configs/items';
 import { SETTINGS } from '../configs/settings';
 import { AbyssSmoke } from '../systems/AbyssSmoke';
 import { addCastleAmbience, addCastleFront, addCastleGround, ARENA_RIFT, ARENA_SIZE, arenaGroundKey, paintCastleGround, ROOM_BOUNDS, WALL_BANNER } from '../systems/CastleArt';
+import { ARENA_RIFTS, textureResolution } from '../systems/CastleModels';
 import { EnemyManager } from '../systems/EnemyManager';
 import { addIcon } from '../systems/IconArt';
 import { audio } from '../systems/Sfx';
+import type { Circle } from '../systems/Colliders';
 import { MapBounds } from '../systems/MapBounds';
 import { session } from '../state/Session';
 import { WorldScene } from './WorldScene';
@@ -37,31 +39,40 @@ const SPAWN_POINTS = SPAWN_AT.map(([x, y]) => ({ x: Math.round(MAP_W * x), y: Ma
 /** Колонны: отступ от боковых стен и высота рядов (доли высоты арены). */
 const PILLARS = { side: 72, rows: [0.38, 0.74] } as const;
 
-/** Режим вылазки: арена сюжета (волны и босс) или «Рейтинг» (бой на время, волны без конца). */
-export type ExpeditionMode = 'story' | 'rating';
-
-/** Время боя для надписей: «мм:сс». */
-export function formatTime(seconds: number): string {
-  const s = Math.floor(seconds);
-  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+/**
+ * Разломы в полу (первая арена): открываются сразу по group штук раз в every секунд (случайно в пределах, когда прежние
+ * закрылись), живут life секунд, раскрываются за open секунд; в радиусе radius герой идёт медленнее (slow — доля
+ * скорости); не ближе minGap к герою и друг к другу при появлении.
+ */
+const FLOOR_RIFT = { every: [5, 8], life: 8, open: 0.7, radius: 132, slow: 0.5, group: 3, minGap: 60 } as const;
+/**
+ * Сама воронка — препятствие: на экране она — широкий эллипс, поэтому тело — три круга в ряд (сдвиг по x и радиус),
+ * сквозь неё не пройти. Её можно бить, как врага: hits ударов — и она рассыпается вместе с зоной замедления.
+ * hitR — насколько велика воронка для удара (к дальности меча), reach — её полуширина (не открываться на враге).
+ */
+const RIFT_BODY = { circles: [[-12, 11], [0, 12], [12, 11]] as const, reach: 23, hitR: 16, hits: 4 } as const;
+/** Разлом на задней стене: низ модели — на линии пола у стены (y карты). */
+const WALL_RIFT_Y = ROOM_BOUNDS.top;
+interface FloorRift {
+  x: number; y: number; t: number; hits: number;
+  img: Phaser.GameObjects.Image; glow: Phaser.GameObjects.Image; ring: Phaser.GameObjects.Graphics; body: Circle[];
 }
 
 /**
- * Одна сцена для трёх арен сюжета и «Рейтинга». Арена — площадка в четырёх стенах: волны врагов, после последней —
- * босс, награда. В «Рейтинге» герой стоит в точке посередине, волны идут без конца (враги — из пройденных арен),
- * считается время. Разлом Бездны внизу арены (удерживая E) — путь в замок.
+ * Одна сцена для всех арен (уровней). Арена — площадка в четырёх стенах: волны врагов, после последней — босс,
+ * награда; проходится на время. Разлом Бездны внизу арены (удерживая E) — путь в замок. На первой арене стены
+ * расколоты Бездной, а в полу иногда открываются разломы, замедляющие героя.
  */
 export class ExpeditionScene extends WorldScene {
   private location: LocationConfig = LOCATIONS[0]!;
-  private mode: ExpeditionMode = 'story';
-  /** «Рейтинг»: сколько секунд идёт бой и какие враги приходят. */
-  private elapsed = 0;
-  private ratingMobs: EnemyTypeId[] = [];
+  /** Сколько этажей пройдено подряд за эту вылазку (рекорд арены — в сохранении). */
+  private floorsCleared = 0;
+  private floorRifts: FloorRift[] = [];
+  private nextRiftIn = 0;
   private smoke!: AbyssSmoke;
   private enemies!: EnemyManager;
   private king: AbyssKing | null = null;
   private kingDown = false;
-  private bossSpawned = false;
   private cleared = false;
   private ending = false;
   private wave = 0;
@@ -72,22 +83,21 @@ export class ExpeditionScene extends WorldScene {
   /** Свой пол у каждой темы: рисуется один раз (в загрузке) и переиспользуется. */
   private get groundKey(): string { return arenaGroundKey(this.location.theme); }
 
-  init(data: { location?: LocationId; mode?: ExpeditionMode }): void {
-    this.ratingMobs = session.ratingMobs;
-    this.mode = data.mode === 'rating' && this.ratingMobs.length > 0 ? 'rating' : 'story';
-    const requested = LOCATIONS.find((loc) => loc.id === (this.mode === 'rating' ? RATING.location : data.location));
-    this.location = requested && session.isUnlocked(requested.id) ? requested : LOCATIONS[0]!;
+  init(data: { location?: LocationId }): void {
+    const requested = LOCATIONS.find((loc) => loc.id === data.location);
+    this.location = requested && session.isUnlocked(requested.id) && !requested.soon ? requested : LOCATIONS[0]!;
   }
 
   create(): void {
     this.king = null;
     this.kingDown = false;
-    this.bossSpawned = false;
     this.cleared = false;
     this.ending = false;
     this.wave = 0;
-    this.nextWaveIn = this.mode === 'rating' ? RATING.every : WAVE_DELAY;   // в «Рейтинге» отсчёт ускоряется, пока врагов нет
-    this.elapsed = 0;
+    this.nextWaveIn = WAVE_DELAY;
+    this.floorsCleared = 0;
+    this.floorRifts = [];
+    this.nextRiftIn = Phaser.Math.FloatBetween(FLOOR_RIFT.every[0], FLOOR_RIFT.every[1]);
     const map = new MapBounds(MAP_W, MAP_H, ROOM_BOUNDS);
     paintCastleGround(this, this.groundKey, MAP_W, MAP_H, this.location.theme);
     addCastleGround(this, this.groundKey, MAP_W);
@@ -104,16 +114,15 @@ export class ExpeditionScene extends WorldScene {
     this.enemies.onPhase = (msg) => this.ui.banner(msg, COLORS.bad, 2);
     this.placeProps();
     this.placeRift();
-    // в «Рейтинге» — точка посередине арены, в сюжете — у разлома
-    if (this.mode === 'rating') this.createPlayer(MAP_W / 2, Math.round(MAP_H / 2));
-    else this.createPlayer(RIFT.x, RIFT.y - RIFT_SPAWN_UP);
+    this.placeWallRift();
+    this.createPlayer(RIFT.x, RIFT.y - RIFT_SPAWN_UP);
     this.player.onDeath = () => {
       this.ui.banner('Вы потерпели поражение', COLORS.bad, 2);
       this.time.delayedCall(2200, () => this.finish(true));
     };
     audio.music('tense');
     this.whenUi(() => {
-      this.ui.banner(this.mode === 'rating' ? 'Рейтинг · на время' : `${this.location.level}. ${this.location.name}`, COLORS.blade, 2.2);
+      this.ui.banner(`${this.location.level}. ${this.location.name}`, COLORS.blade, 2.2);
       this.updateObjective();
       this.buildMinimap();
     });
@@ -154,10 +163,22 @@ export class ExpeditionScene extends WorldScene {
     });
   }
 
-  private spawnWave(): void {
-    const count = this.location.waves[this.wave]!;
+  /** Следующий этаж: обычная волна (на каждом этаже врагов больше), на последнем — босс. */
+  private nextFloor(): void {
     this.wave++;
-    this.ui.banner(`Волна ${this.wave} / ${this.location.waves.length}`, COLORS.blade, 1.4);
+    if (this.wave >= ARENA_FLOORS) { this.ui.banner(`Этаж ${this.wave} / ${ARENA_FLOORS}`, COLORS.bad, 1.4); this.spawnBoss(); }
+    else this.spawnWave();
+  }
+
+  /** Этаж зачищен: счёт пройденных подряд растёт. */
+  private floorCleared(): void {
+    this.floorsCleared = this.wave;
+    if (this.floorsCleared < ARENA_FLOORS) this.ui.banner(`Этаж ${this.floorsCleared} пройден`, COLORS.blade, 1.4);
+  }
+
+  private spawnWave(): void {
+    const count = this.location.firstWave + (this.wave - 1) * this.location.perFloor;
+    this.ui.banner(`Этаж ${this.wave} / ${ARENA_FLOORS}`, COLORS.blade, 1.4);
     for (let i = 0; i < count; i++) {
       const free = SPAWN_POINTS.filter((p) => Math.hypot(p.x - this.player.x, p.y - this.player.y) >= SPAWN_DISTANCE);
       const p = free[i % free.length] ?? SPAWN_POINTS[i % SPAWN_POINTS.length]!;
@@ -168,21 +189,7 @@ export class ExpeditionScene extends WorldScene {
     }
   }
 
-  /** «Рейтинг»: волна растёт с каждым разом, враги — по кругу из орды пройденных арен и всё крепче. */
-  private spawnRatingWave(): void {
-    const count = RATING.firstWave + this.wave * RATING.perWave, hpMul = 1 + this.wave * RATING.hpPerWave;
-    this.wave++;
-    this.ui.banner(`Волна ${this.wave}`, COLORS.blade, 1.2);
-    for (let i = 0; i < count; i++) {
-      const free = SPAWN_POINTS.filter((p) => Math.hypot(p.x - this.player.x, p.y - this.player.y) >= SPAWN_DISTANCE);
-      const p = free[i % free.length] ?? SPAWN_POINTS[i % SPAWN_POINTS.length]!;
-      this.fx.ring(p.x, p.y, 16, COLORS.gold, 0.6);
-      this.enemies.spawn(this.ratingMobs[(this.wave + i) % this.ratingMobs.length]!, p.x, p.y, { hpMul });
-    }
-  }
-
   private spawnBoss(): void {
-    this.bossSpawned = true;
     const far = SPAWN_POINTS.find((p) => Math.hypot(p.x - this.player.x, p.y - this.player.y) > SPAWN_DISTANCE) ?? BOSS_START;
     this.king = this.enemies.spawn('king', far.x, far.y, { hpMul: this.location.hpMultiplier }) as AbyssKing;
     this.ui.banner(ENEMY_TYPES.king.name, COLORS.bad, 2);
@@ -201,14 +208,8 @@ export class ExpeditionScene extends WorldScene {
   }
 
   private updateObjective(): void {
-    if (this.mode === 'rating') {
-      const best = session.data.ratingBest;
-      this.ui.setObjective(`Время ${formatTime(this.elapsed)}${best ? ` · рекорд ${formatTime(best)}` : ''} · волна ${this.wave} · врагов: ${this.enemies.activeCount}`);
-      return;
-    }
-    this.ui.setObjective(this.cleared ? 'Победа · разлом внизу — путь в замок'
-      : this.bossSpawned ? `Босс · врагов: ${this.enemies.activeCount}`
-      : `Волна ${Math.max(1, this.wave)}/${this.location.waves.length} · врагов: ${this.enemies.activeCount}`);
+    this.ui.setObjective(this.cleared ? `Все ${ARENA_FLOORS} этажей пройдены · разлом внизу — путь в замок`
+      : `Этаж ${Math.max(1, this.wave)}/${ARENA_FLOORS} · врагов: ${this.enemies.activeCount}`);
   }
 
   private buildMinimap(): void {
@@ -221,7 +222,27 @@ export class ExpeditionScene extends WorldScene {
   }
 
   override playerStrike(x: number, y: number, dx: number, dy: number, range: number, arc: number, damage: number): number {
-    return this.enemies.strike(x, y, dx, dy, range, arc, damage);
+    return this.enemies.strike(x, y, dx, dy, range, arc, damage) + this.strikeRifts(x, y, dx, dy, range, arc);
+  }
+
+  /** Удар по воронкам в полу (как по врагам: в дальности и в дуге взмаха); RIFT_BODY.hits ударов — воронка рассыпается. */
+  private strikeRifts(x: number, y: number, dx: number, dy: number, range: number, arc: number): number {
+    let hits = 0;
+    const base = Math.atan2(dy, dx);
+    for (const rift of this.floorRifts) {
+      if (rift.hits >= RIFT_BODY.hits || rift.t < FLOOR_RIFT.open) continue;
+      const d = Phaser.Math.Distance.Between(x, y, rift.x, rift.y);
+      if (d > range + RIFT_BODY.hitR || Math.abs(Phaser.Math.Angle.Wrap(Math.atan2(rift.y - y, rift.x - x) - base)) > arc) continue;
+      hits++;
+      rift.hits++;
+      const broken = rift.hits >= RIFT_BODY.hits;
+      this.fx.burst({ x: rift.x, y: rift.y - 6, count: broken ? 26 : 8, speed: [20, broken ? 90 : 50], life: [0.3, 0.7], size: [1, 3], tints: [0xd8a8ff, 0x8a3ad0, 0x4b5265], gravity: 80, depth: rift.y + 1 });
+      this.tweens.add({ targets: rift.img, x: rift.x + Phaser.Math.Between(-2, 2), duration: 50, yoyo: true, repeat: 1, onComplete: () => rift.img.setX(rift.x) });
+      audio.play(broken ? 'portal' : 'hit');
+      // рассыпалась: сразу закрывается (последняя часть жизни — сжатие), препятствие и замедление уходят
+      if (broken) { rift.t = Math.max(rift.t, FLOOR_RIFT.life - FLOOR_RIFT.open); for (const c of rift.body) this.colliders.remove(c); }
+    }
+    return hits;
   }
 
   private onMobDied(mob: Mob): void {
@@ -238,8 +259,9 @@ export class ExpeditionScene extends WorldScene {
   private finish(died: boolean): void {
     if (this.ending) return;
     this.ending = true;
-    if (this.mode === 'rating') session.finishRating(died, this.elapsed);
-    else session.finishRun(died, this.kingDown, this.cleared);
+    const floors = session.recordArenaFloors(this.location.id, this.floorsCleared);
+    const report = session.finishRun(died, this.kingDown, this.cleared);
+    report.floors = floors;
     audio.play('portal');
     this.goTo(SCENES.base, { arrival: true });
   }
@@ -262,26 +284,68 @@ export class ExpeditionScene extends WorldScene {
         session.data.poultice--; this.player.heal(SETTINGS.base.poulticeHeal); session.save();
       } else { audio.play('error'); this.ui.message(session.data.poultice > 0 ? 'Здоровье уже полное' : 'Нет эликсиров'); }
     }
-    if (this.mode === 'rating') { this.tickRating(dt); return; }
+    this.tickFloorRifts(dt);
     if (this.king && !this.kingDown) this.ui.setBoss(ENEMY_TYPES.king.name, this.king.hp / this.king.maxHp);
     if (!this.cleared && this.enemies.activeCount === 0) {
-      if (this.bossSpawned && this.kingDown) { this.completeArena(); return; }
+      if (this.wave > this.floorsCleared) this.floorCleared();
+      if (this.floorsCleared >= ARENA_FLOORS) { this.completeArena(); return; }
       this.nextWaveIn -= dt;
-      if (this.nextWaveIn <= 0) {
-        this.nextWaveIn = WAVE_DELAY;
-        if (this.wave < this.location.waves.length) this.spawnWave();
-        else if (!this.bossSpawned) this.spawnBoss();
-        else this.completeArena();
-      }
+      if (this.nextWaveIn <= 0) { this.nextWaveIn = WAVE_DELAY; this.nextFloor(); }
     }
     this.updateObjective();
   }
 
-  /** «Рейтинг»: идёт время; следующая волна — когда прежняя добита (после паузы) или через RATING.every секунд. */
-  private tickRating(dt: number): void {
-    this.elapsed += dt;
-    this.nextWaveIn -= this.enemies.activeCount === 0 ? dt * (RATING.every / WAVE_DELAY) : dt;
-    if (this.nextWaveIn <= 0) { this.nextWaveIn = RATING.every; this.spawnRatingWave(); }
-    this.updateObjective();
+  // ---------------- разломы Бездны ----------------
+  /** Объёмный разлом посередине задней стены (между знамёнами): лиловое сияние дышит, из тьмы вылетают искры. */
+  private placeWallRift(): void {
+    if (!this.location.rifts?.wall) return;
+    const W = ARENA_RIFTS.wall, x = MAP_W / 2;
+    const rift = this.add.image(x, WALL_RIFT_Y, W.key).setOrigin(W.anchor.x / W.w, W.anchor.y / W.h).setDepth(DEPTH.ground + 2);
+    rift.setScale(1 / textureResolution(rift.texture));
+    const glow = this.add.image(x, WALL_RIFT_Y - 26, TEXTURES.glow).setTint(0x9a40ff).setBlendMode(Phaser.BlendModes.ADD).setScale(2, 3).setAlpha(0.4).setDepth(DEPTH.ground + 3);
+    this.tweens.add({ targets: glow, alpha: 0.2, duration: 1300, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+    this.time.addEvent({ delay: 450, loop: true, callback: () => this.fx.burst({ x: x + Phaser.Math.Between(-4, 4), y: WALL_RIFT_Y - 26 + Phaser.Math.Between(-12, 12), count: 1, speed: [6, 18], life: [0.6, 1.2], size: [1, 2], tints: [0xd8a8ff, 0x9a40ff], gravity: -10, blend: Phaser.BlendModes.ADD, depth: DEPTH.ground + 4 }) });
+  }
+
+  /** Разломы в полу: открываются время от времени, замедляют героя рядом с собой и закрываются. */
+  private tickFloorRifts(dt: number): void {
+    const R = FLOOR_RIFT;
+    let slow = 1;
+    for (const rift of this.floorRifts) {
+      rift.t += dt;
+      const k = rift.t < R.open ? rift.t / R.open : rift.t > R.life - R.open ? (R.life - rift.t) / R.open : 1;
+      rift.img.setScale(Math.max(0, k) / textureResolution(rift.img.texture)); rift.glow.setAlpha(0.35 * k);
+      rift.ring.clear().lineStyle(1, 0xb070ff, 0.35 * k).strokeEllipse(rift.x, rift.y, R.radius * 2 * k, R.radius * 1.2 * k);
+      if (k > 0.5 && rift.hits < RIFT_BODY.hits && Phaser.Math.Distance.Between(this.player.x, this.player.y, rift.x, rift.y) < R.radius * k) slow = R.slow;
+    }
+    this.player.speedMul = slow;
+    for (const rift of this.floorRifts.filter((r) => r.t >= R.life)) { rift.img.destroy(); rift.glow.destroy(); rift.ring.destroy(); for (const c of rift.body) this.colliders.remove(c); }
+    this.floorRifts = this.floorRifts.filter((r) => r.t < R.life);
+    if (!this.location.rifts?.floor || this.cleared) return;
+    // новая тройка — когда прежние закрылись и прошло время
+    if (this.floorRifts.length > 0) return;
+    this.nextRiftIn -= dt;
+    if (this.nextRiftIn > 0) return;
+    this.nextRiftIn = Phaser.Math.FloatBetween(R.every[0], R.every[1]);
+    for (let i = 0; i < R.group; i++) this.openFloorRift();
+  }
+
+  /** Новый разлом — в свободном месте пола, не под героем и не на разломе возврата. */
+  private openFloorRift(): void {
+    const R = FLOOR_RIFT, b = ROOM_BOUNDS;
+    for (let tries = 0; tries < 12; tries++) {
+      const x = Phaser.Math.Between(b.side + R.radius, MAP_W - b.side - R.radius), y = Phaser.Math.Between(b.top + R.radius, MAP_H - b.bottom - ARENA_RIFT.up - R.radius);
+      // не под героем, не на другом разломе и не на враге (воронка — препятствие, враг бы застрял)
+      const near = [this.player, ...this.floorRifts].some((p) => Phaser.Math.Distance.Between(x, y, p.x, p.y) < R.minGap)
+        || this.enemies.enemies.some((m) => Phaser.Math.Distance.Between(x, y, m.x, m.y) < RIFT_BODY.reach + m.config.radius + 4);
+      if (near || this.map.isBlocked(x, y) || this.colliders.overlaps(x, y, 12)) continue;
+      // кристаллы торчат вверх — глубина по y, как у объектов: герой за разломом заходит за кристаллы
+      const F = ARENA_RIFTS.floor, img = this.add.image(x, y, F.key).setOrigin(F.anchor.x / F.w, F.anchor.y / F.h).setDepth(y).setScale(0);
+      const glow = this.add.image(x, y - 4, TEXTURES.glow).setTint(0x8a30e0).setBlendMode(Phaser.BlendModes.ADD).setScale(2.4, 1.2).setAlpha(0).setDepth(DEPTH.decals + 1);
+      this.floorRifts.push({ x, y, t: 0, hits: 0, img, glow, ring: this.add.graphics().setDepth(DEPTH.decals + 1), body: RIFT_BODY.circles.map(([dx, r]) => this.colliders.add(x + dx, y, r)) });
+      this.fx.burst({ x, y, count: 10, speed: [10, 40], life: [0.3, 0.7], size: [1, 2], tints: [0xc080ff, 0x8a30e0], gravity: -20, depth: DEPTH.fx });
+      audio.play('portal');
+      return;
+    }
   }
 }
