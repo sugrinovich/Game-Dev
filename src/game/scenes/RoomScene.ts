@@ -1,25 +1,29 @@
 import Phaser from 'phaser';
 import { TEXTURES } from '../configs/assets';
 import { COLORS, DEPTH, SCENES } from '../configs/game';
-import { BUILDINGS, POULTICE_PRICE, ROOMS, WEAPON_NAMES, type RoomId } from '../configs/items';
+import { ROOMS, type RoomId } from '../configs/items';
 import { SETTINGS } from '../configs/settings';
-import { addCastleAmbience, addCastleFront, addCastleGround, CASTLE_BOUNDS, paintCastleGround, ROOM_SIZE, roomGroundKey } from '../systems/CastleArt';
+import { addCastleAmbience, addCastleFront, addCastleGround, paintCastleGround, ROOM_BOUNDS, ROOM_SIZE, roomGroundKey } from '../systems/CastleArt';
 import { MapBounds } from '../systems/MapBounds';
 import { audio } from '../systems/Sfx';
 import { session } from '../state/Session';
-import { PText } from '../ui/PText';
 import { WorldScene } from './WorldScene';
-import type { ChoiceOption } from './UIScene';
 
 const MAP_W = ROOM_SIZE.w;
 const MAP_H = ROOM_SIZE.h;
 /** Проём в передней стене посередине — выход в тронный зал; герой входит здесь. */
-const DOOR = { x: MAP_W / 2, y: MAP_H - CASTLE_BOUNDS.bottom - 6 } as const;
+const DOOR = { x: MAP_W / 2, y: MAP_H - ROOM_BOUNDS.bottom - 6 } as const;
 const SPAWN = { x: MAP_W / 2, y: MAP_H - 64 } as const;
-/** Кузня: лавовая печь посередине, гном у наковальни, витрины с оружием и доспехами. */
-const SMITHY = { furnace: { x: MAP_W / 2, y: 108 }, smith: { x: 156, y: 188 }, rack: { x: 96, y: 114 }, armor: [{ x: 376, y: 116 }, { x: 410, y: 116 }] } as const;
-/** Целебница: ведьма у котла посередине, полки с колбами вдоль задней стены. */
-const APOTHECARY = { witch: { x: MAP_W / 2, y: 182 }, shelves: [{ x: 110, y: 112 }, { x: 370, y: 112 }] } as const;
+/**
+ * Кузня: лавовая печь посередине, гном у наковальни, витрины с оружием и доспехами; бочка для закалки, тачка с углём
+ * и точильный круг — для атмосферы.
+ */
+const SMITHY = {
+  furnace: { x: MAP_W / 2, y: 108 }, smith: { x: 150, y: 184 }, rack: { x: 92, y: 114 }, armor: [{ x: 372, y: 116 }, { x: 408, y: 116 }],
+  barrel: { x: 206, y: 194 }, cart: { x: 404, y: 196 }, grind: { x: 62, y: 190 },
+} as const;
+/** Целебница: ведьма у котла посередине, полки с колбами вдоль задней стены; стол алхимика и кадка с травами. */
+const APOTHECARY = { witch: { x: MAP_W / 2, y: 182 }, shelves: [{ x: 110, y: 112 }, { x: 370, y: 112 }], table: { x: 392, y: 196 }, herbs: { x: 82, y: 192 } } as const;
 /** Как часто из устья печи летят искры (с). */
 const FORGE_SPARKS_EVERY = 0.25;
 
@@ -27,8 +31,6 @@ const FORGE_SPARKS_EVERY = 0.25;
 export class RoomScene extends WorldScene {
   private room: RoomId = 'smithy';
   private sparkT = 0;
-  private mark: { x: number; y: number; ready: () => boolean; text: PText | null } | null = null;
-  private markT = 0;
 
   constructor() { super({ key: SCENES.room }); }
 
@@ -37,9 +39,8 @@ export class RoomScene extends WorldScene {
   }
 
   create(): void {
-    this.mark = null;
     const key = roomGroundKey(this.room);
-    const map = new MapBounds(MAP_W, MAP_H, CASTLE_BOUNDS);
+    const map = new MapBounds(MAP_W, MAP_H, ROOM_BOUNDS);
     paintCastleGround(this, key, MAP_W, MAP_H, this.room);
     addCastleGround(this, key, MAP_W);
     this.initWorld(map, 'base');
@@ -54,7 +55,6 @@ export class RoomScene extends WorldScene {
     this.player.setDepth(SPAWN.y);
     audio.music('calm');
     this.whenUi(() => {
-      this.ui.setObjective(`${ROOMS[this.room].name} · выход внизу`);
       this.ui.banner(ROOMS[this.room].name, COLORS.blade, 1.6);
     });
   }
@@ -73,48 +73,20 @@ export class RoomScene extends WorldScene {
   }
 
   // ---------------- кузня ----------------
+  /** Кузня — пока без торговли: печь, кузнец за работой и обстановка. */
   private buildSmithy(): void {
     const S = SMITHY;
     this.furniture('room_furnace', S.furnace.x, S.furnace.y, [[-36, -4, 12], [-18, -4, 12], [0, -4, 12], [18, -4, 12], [36, -4, 12], [-54, -2, 8], [51, 0, 8]]);
     this.light(S.furnace.x, S.furnace.y - 16, 0xff7a2a, 5.2, 0.42);
+    this.light(S.furnace.x, S.furnace.y + 6, 0xff5a1a, 3.4, 0.3);
     this.furniture('npc_smith', S.smith.x, S.smith.y, [[0, -2, 7], [19, -1, 6]]);
     this.light(S.smith.x + 19, S.smith.y - 12, 0xffa040, 1.4, 0.35);
     this.furniture('room_weapons', S.rack.x, S.rack.y, [[-14, -2, 7], [0, -2, 7], [14, -2, 7]]);
     for (const a of S.armor) this.furniture('room_armor', a.x, a.y, [[0, -2, 6]]);
-    this.interactables.push({ x: S.smith.x + 8, y: S.smith.y + 10, radius: 32, promptY: 50, label: () => 'Гном-кузнец · перековать оружие', use: () => this.openSmith() });
-    this.mark = { x: S.smith.x, y: S.smith.y - 40, ready: () => this.canUpgrade('workshop'), text: null };
-  }
-
-  private canUpgrade(id: 'workshop' | 'garden'): boolean {
-    const lv = session.data.buildings[id];
-    return lv < 3 && session.canAfford(BUILDINGS[id].prices[lv]!);
-  }
-
-  private openSmith(): void {
-    const lv = session.data.buildings.workshop, cfg = BUILDINGS.workshop;
-    const options: ChoiceOption[] = [];
-    if (lv < 3) {
-      options.push({
-        label: `Перековать: ${WEAPON_NAMES[lv + 1]}`, cost: cfg.prices[lv], desc: cfg.effects[lv],
-        enabled: this.canUpgrade('workshop'), onChoose: () => { this.forge(); },
-      });
-    }
-    options.push({ label: 'Уйти', onChoose: () => undefined });
-    this.ui.openChoice({
-      title: 'Гном-кузнец',
-      lines: [lv < 3 ? '«Принёс монеты? Тогда раздувай мехи!»' : '«Лучше этого клинка уже не выковать.»', `Оружие: ${WEAPON_NAMES[lv]} · урон ${session.damage}`, `Кошелёк: ${session.data.coins} монет`],
-      options, width: 330,
-    });
-  }
-
-  private forge(): void {
-    if (!session.upgrade('workshop')) return;
-    const { x, y } = SMITHY.smith;
-    audio.play('build');
-    this.shake(0.004, 160);
-    this.fx.burst({ x: x + 19, y: y - 14, count: 30, speed: [30, 110], angle: [-Math.PI, 0], life: [0.4, 0.9], size: [1, 3], tints: [0xfff0a0, 0xffc060, 0xff8a2a], gravity: 120, blend: Phaser.BlendModes.ADD, depth: DEPTH.fx });
-    this.ui.banner(`Выковано: ${WEAPON_NAMES[session.data.buildings.workshop]}`, COLORS.blade, 2.4);
-    this.openSmith();
+    this.furniture('room_quench', S.barrel.x, S.barrel.y, [[0, -3, 10]]);
+    this.furniture('room_coal_cart', S.cart.x, S.cart.y, [[-10, -3, 10], [10, -3, 10]]);
+    this.furniture('room_grindstone', S.grind.x, S.grind.y, [[0, -3, 10]]);
+    for (const p of [S.barrel, S.cart, S.grind]) this.groundShadow(p.x, p.y, 1.2, 0.7);
   }
 
   // ---------------- целебница ----------------
@@ -123,41 +95,22 @@ export class RoomScene extends WorldScene {
     for (const s of A.shelves) this.furniture('room_shelves', s.x, s.y, [[-14, -2, 7], [0, -2, 7], [14, -2, 7]]);
     this.furniture('npc_witch', A.witch.x, A.witch.y, [[-6, -2, 6], [7, 0, 8]]);
     this.light(A.witch.x + 7, A.witch.y - 10, 0x5ae07a, 2.2, 0.3);
-    this.interactables.push({ x: A.witch.x + 4, y: A.witch.y + 12, radius: 34, promptY: 50, label: () => 'Ведьма · зелья и травы', use: () => this.openWitch() });
-    this.mark = { x: A.witch.x - 6, y: A.witch.y - 48, ready: () => session.data.buildings.garden > 0 && session.data.gardenStage >= 3, text: null };
+    this.furniture('room_alchemy', A.table.x, A.table.y, [[-16, -3, 9], [0, -3, 9], [16, -3, 9]]);
+    this.light(A.table.x + 10, A.table.y - 22, 0xffc070, 1.2, 0.3);
+    this.furniture('room_herbs', A.herbs.x, A.herbs.y, [[-8, -3, 9], [8, -3, 9]]);
+    this.light(A.herbs.x, A.herbs.y - 12, 0x7ad0ff, 1.4, 0.22);
+    for (const p of [A.table, A.herbs]) this.groundShadow(p.x, p.y, 1.4, 0.7);
+    this.interactables.push({ x: A.witch.x + 4, y: A.witch.y + 12, radius: 34, promptY: 50, label: () => 'Ведьма', use: () => this.openWitch() });
   }
 
+  /** Ведьма пока ничего не продаёт (эликсир восполняет отдых у костра) — только подсказывает. */
   private openWitch(): void {
-    const lv = session.data.buildings.garden, cfg = BUILDINGS.garden, max = SETTINGS.base.poulticeMax;
-    const options: ChoiceOption[] = [{
-      label: `Сварить эликсир (${session.data.poultice}/${max})`, cost: POULTICE_PRICE,
-      desc: `Лечит ${SETTINGS.base.poulticeHeal} здоровья. Пить на арене — клавиша Q.`,
-      enabled: session.canAfford(POULTICE_PRICE) && session.data.poultice < max,
-      onChoose: () => { if (session.craftPotion()) { audio.play('heal'); this.brewFx(); } this.openWitch(); },
-    }];
-    if (lv > 0 && session.data.gardenStage >= 3) {
-      options.push({
-        label: 'Забрать зелья из трав', desc: `Готовые эликсиры (не больше ${max}).`,
-        onChoose: () => {
-          const gain = session.harvestGarden();
-          audio.play('pickup');
-          this.ui.message(gain > 0 ? `Эликсиры: +${gain}` : 'Сумка эликсиров полна', 'castle_potion');
-          this.openWitch();
-        },
-      });
-    }
-    if (lv < 3) {
-      options.push({
-        label: lv === 0 ? 'Посадить травы' : `Больше трав: ур. ${lv + 1}`, cost: cfg.prices[lv], desc: `${cfg.effects[lv]} Травы растут после каждой вылазки.`,
-        enabled: this.canUpgrade('garden'), onChoose: () => { if (session.upgrade('garden')) { audio.play('build'); this.brewFx(); } this.openWitch(); },
-      });
-    }
-    options.push({ label: 'Уйти', onChoose: () => undefined });
-    const growth = lv > 0 ? ` · травы: ${session.data.gardenStage}/3` : '';
+    this.brewFx();
     this.ui.openChoice({
       title: 'Ведьма',
-      lines: ['«Зелья, травы и немного тьмы…»', `Эликсиров: ${session.data.poultice}/${max}${growth}`, `Кошелёк: ${session.data.coins} монет`],
-      options, width: 340,
+      lines: ['«Зелья, травы и немного тьмы…»', 'Эликсир не купить: отдохни у чёрного костра — и один всегда будет с тобой.', `Эликсиров: ${session.data.poultice}/${SETTINGS.base.poulticeMax}`],
+      options: [{ label: 'Уйти', onChoose: () => undefined }],
+      width: 340,
     });
   }
 
@@ -180,23 +133,6 @@ export class RoomScene extends WorldScene {
       const { x, y } = SMITHY.furnace;
       this.fx.burst({ x: x + Phaser.Math.Between(-11, 11), y: y - 18, count: 1, speed: [10, 30], angle: [-Math.PI * 0.7, -Math.PI * 0.3], life: [0.8, 1.6], size: [1, 2], tints: [0xffc04a, 0xff8a2a, 0xfff0a0], gravity: -10, blend: Phaser.BlendModes.ADD, depth: DEPTH.fx });
     }
-    this.markT -= dt;
-    if (this.markT <= 0) { this.markT = 0.6; this.updateMark(); }
     if (this.player.potionPressed()) this.ui.message('Эликсиры пригодятся на арене');
-  }
-
-  /** Золотой «!» над кузнецом или ведьмой, когда можно перековать оружие или забрать зелья. */
-  private updateMark(): void {
-    const m = this.mark;
-    if (!m) return;
-    const ready = m.ready();
-    if (ready && !m.text) {
-      m.text = new PText(this, m.x, m.y, '!', { font: 'big', ax: 0.5, ay: 1, color: COLORS.gold }).setDepth(DEPTH.fx);
-      this.tweens.add({ targets: m.text, y: m.y - 4, duration: 420, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
-    } else if (!ready && m.text) {
-      this.tweens.killTweensOf(m.text);
-      m.text.destroy();
-      m.text = null;
-    }
   }
 }

@@ -3,6 +3,7 @@ import { HERO_SHEET, PLAYER_DIRECTIONS, type PlayerDirection } from '../configs/
 import { GAME } from '../configs/game';
 import { add, CAMERA_PITCH, cross, dot, MODEL_AXES, mul, norm, project, renderModel, sub, type Axes, type Mark, type Paint, type Part, type Shade, type Surface, type Vec } from './Rig3D';
 import { addOutline, addVolume, ramp, type Ramp } from './Volume';
+import { readableCanvas, strips } from './CastleModels';
 
 /*
  * Персонажи — объёмные куклы со скелетом.
@@ -30,8 +31,13 @@ type PoseKind = HeroAnimKind | 'attack';
 const TAU = Math.PI * 2;
 const DEG = Math.PI / 180;
 const S = HERO_SHEET.frameSize;
-/** Пикселей листа на пиксель игры. */
-const RES = GAME.resolution;
+/**
+ * Во сколько раз фигуры (герой, мобы, их оружие) крупнее своего телосложения: модель рисуется во столько же раз
+ * детальнее и на экране во столько же раз больше — больше пикселей на лицо, доспехи и клинок.
+ */
+export const FIGURE_SCALE = 1.25;
+/** Пикселей листа на пиксель телосложения (лист рисуется в GAME.resolution раз детальнее экрана). */
+const RES = GAME.resolution * FIGURE_SCALE;
 /** Один пиксель листа по вертикали экрана — в единицах модели: на столько (кратно) поднимается и опускается тело. */
 const PIXEL_Y = 1 / (RES * Math.cos(CAMERA_PITCH));
 /** Сдвиг по экрану, округлённый до пикселя листа. */
@@ -291,13 +297,15 @@ function bodyParts(d: Dressing, skin: Paint, limbs: Paint = skin): void {
 // ---------------- материалы ----------------
 /** Палитры материалов: ступени тона от блика к тени (см. ramp в Volume.ts). */
 const M = {
-  skin: ramp('#e2b48c'), hair: ramp('#6a4026'), bone: ramp('#e0d8c0'),
+  skin: ramp('#e2b48c'), hair: ramp('#6a4026'), hairDark: ramp('#4e2c18'), bone: ramp('#e0d8c0'),
   orc: ramp('#6a9a42'), orcDark: ramp('#4a7430'), ogre: ramp('#a8865e'), belly: ramp('#c8a67a'), darkHair: ramp('#3a2a1c'), tusk: ramp('#f0e6c8'),
   shorts: ramp('#7a5a3a'), rope: ramp('#c8a870'), trousers: ramp('#4a4258'),
   mail: ramp('#727c8a'), mailDark: ramp('#4c5664'), leather: ramp('#6a4630'), leatherDark: ramp('#4a2e1e'), glove: ramp('#5a3a26'), gloveCuff: ramp('#7a5236'),
   gold: ramp('#c8a048'), wood: ramp('#8a5328'),
   /** Полированная сталь светлая даже в тени — клинок не теряется на кольчуге. */
   steel: ['#ffffff', '#f4f8fc', '#dde5ee', '#c2cbd8', '#a2acbc'], iron: ramp('#7a7f88'), ironDark: ramp('#4e525a'),
+  /** Дол клинка — желобок посередине, чуть темнее полотна. */
+  fuller: ['#e6edf5', '#cfd8e3', '#b5c0ce', '#97a3b4', '#7a8698'],
   cloth: ramp('#6e4c30'), fur: ramp('#8a7458'), fletch: ramp('#c84a4a'),
   robe: ramp('#4a3062'), robeFold: ramp('#3a2450'), armor: ramp('#4a3e64'), plate: ramp('#5e5080'),
   orb: ['#ffffff', '#f0c8ff', '#c070ff', '#8030d0', '#4a1880'],
@@ -305,16 +313,22 @@ const M = {
 /** Цвета без светотени: глаза, впадины, огонь, руны. */
 const C = {
   eye: '#1d1822', skinShade: '#b07a58', hollow: '#2a2430', eyeGlow: '#ff5a4a', eyeDim: '#7a2a2a',
-  orcEye: '#ff4a2a', ogreEye: '#ffd040', mouth: '#2a1418', nail: '#e8dcc0', rust: '#8a5a3a', steelLight: '#f0f4f8', gold: '#f2d060',
+  gem: '#d0303c', rivet: '#9aa2ae', orcEye: '#ff4a2a', ogreEye: '#ffd040', mouth: '#2a1418', nail: '#e8dcc0', rust: '#8a5a3a', steelLight: '#f0f4f8', gold: '#f2d060',
   rune: '#c060ff', runeBright: '#e0a0ff', flame: '#8a30e0', flameTip: '#e0a0ff', void: '#0e0818', white: '#ffffff', string: '#e8e0c8',
 } as const;
 
 // ---------------- тела ----------------
-/** Человек: кожа, волосы шапкой (лицо открыто), глаза и рот. */
+/** Пряди волос: тёмные полосы сверху вниз (частота по окружности головы). */
+const HAIR_STRANDS = 9;
+/** Человек: кожа, волосы шапкой с прядями (лицо открыто), уши, глаза и рот. */
 const human: Dresser = (d) => {
   const { parts, pose: P, build: B } = d;
   bodyParts(d, M.skin);
-  parts.set('hair', ball(add(P.head, [0, 0.35, -0.25]), mul(B.head.r, 1.07), (s) => (s.y > 0.28 || s.z < -0.1 || (Math.abs(s.x) > 0.84 && s.y > -0.2) ? M.hair : null)));
+  parts.set('hair', ball(add(P.head, [0, 0.35, -0.25]), mul(B.head.r, 1.07), (s) => {
+    if (!(s.y > 0.28 || s.z < -0.1 || (Math.abs(s.x) > 0.84 && s.y > -0.2))) return null;
+    return Math.sin(Math.atan2(s.x, s.z) * HAIR_STRANDS) > 0.55 ? M.hairDark : M.hair;
+  }));
+  for (const side of [-1, 1]) parts.set(`ear${side}`, ball(add(P.head, [side * B.head.r[0] * 0.98, -0.2, -0.1]), [0.55, 0.9, 0.6], M.skin));
   eyes(d, P.blink ? C.skinShade : C.eye, 0.34, -0.02);
   markOn(d, P.head, B.head.r, 0, -0.42, C.skinShade);
 };
@@ -439,6 +453,8 @@ export const GEAR_SLOTS = ['legs', 'body', 'belt', 'head', 'hands', 'weapon'] as
 export type GearSlot = (typeof GEAR_SLOTS)[number];
 interface GearVisual { slot: GearSlot; dress: Dresser }
 
+/** Заклёпок по ободу шлема. */
+const HELM_RIVETS = 6;
 /** Самая тонкая деталь (полутолщина): тоньше пикселя она пропадала бы, когда видна «с ребра». */
 const MIN_HALF = 0.5;
 
@@ -454,6 +470,11 @@ function bladeOut(P: Pose): Vec {
   return norm(sub(out, mul(P.grip.up, dot(out, P.grip.up))));
 }
 
+/**
+ * Меч: середина клинка над кулаком (вдоль рукояти), полудлина, полуширина плоскости, полуширина узкого сечения;
+ * с какой доли длины клинок сужается к острию; полудлина гарды; витков обмотки рукояти.
+ */
+const SWORD = { mid: 7.4, half: 5.3, width: 1.05, edge: 0.6, tipFrom: 0.72, guard: 2.5, wraps: 4 } as const;
 /** Дубина огра: от кисти вниз и вверх, к верху толще; в навершие вбиты шипы. */
 const CLUB = { from: -3, length: 19, segments: 5, r0: 0.9, r1: 2.4, spikes: [11, 14, 17] } as const;
 /** Сфера Короля Бездны: центр выше кулака на lift пикселей экрана, радиус r. Отсюда же вылетают огненные шары. */
@@ -496,29 +517,25 @@ export const GEAR = {
       markOn(d, P.chest, B.torso.r, 0, -0.74, C.gold);
     },
   },
-  purse: {
-    slot: 'belt',
-    // ремень через грудь (с правого плеча к левому бедру) и кошель на левом бедре
-    dress: (d) => {
-      const { parts, marks, pose: P, build: B } = d;
-      repaint(parts, ['torso'], (s, under) => (Math.abs(s.x * 0.75 + s.y) < 0.15 ? M.leather : under(s)));
-      const hip = add(P.pelvis, [B.pelvis[0] * 0.95, 0.3, B.pelvis[2] * 0.35]);
-      parts.set('pouch', brick(hip, [0.9, 1.2, 1.1], MODEL_AXES, M.leather));
-      parts.set('pouchFlap', brick(add(hip, [0.05, 0.8, 0]), [1, 0.45, 1.2], MODEL_AXES, M.leatherDark));
-      marks.push({ p: add(hip, [1, 0.3, 0]), color: C.gold, n: [1, 0, 0] });
-    },
-  },
   helm: {
     slot: 'head',
-    // железный шлем: купол чуть больше головы, лицо открыто, сзади назатыльник, обод над глазами, наносник
+    // железный шлем: купол чуть больше головы, лицо открыто, сзади назатыльник, обод над глазами, наносник;
+    // волосы и уши под шлемом убираются — иначе пряди торчат сквозь купол
     dress: ({ parts, marks, pose: P, build: B }) => {
+      for (const key of ['hair', 'ear-1', 'ear1']) parts.delete(key);
       const r = mul(B.head.r, 1.13);
       parts.set('helm', ball(add(P.head, [0, 0.4, 0]), r, (s) => {
         if (s.y < -0.05 && !(s.z < -0.25 && s.y > -0.65)) return null;
         return s.y < 0.1 && s.y > -0.05 ? M.ironDark : M.iron;
       }));
       parts.set('nasal', rod(add(P.head, [0, 0.4, r[2] * 0.95]), add(P.head, [0, -B.head.r[1] * 0.35, B.head.r[2] * 1.05]), 0.55, M.iron));
-      for (const [x, z] of [[1.2, 0.6], [-1.5, -0.8]] as const) marks.push({ p: add(P.head, [x, r[1] * 1.3, z]), color: C.rust, n: [0, 1, 0] });
+      // гребень по куполу спереди назад и заклёпки по ободу (на поверхности шлема, а не над ним)
+      const top = add(P.head, [0, 0.4 + r[1] * 0.93, 0]);
+      parts.set('crest', rod(add(top, [0, -r[1] * 0.12, r[2] * 0.55]), add(top, [0, -r[1] * 0.1, -r[2] * 0.6]), 0.55, M.ironDark));
+      for (let i = 0; i < HELM_RIVETS; i++) {
+        const a = ((i + 0.5) / HELM_RIVETS) * TAU, n: Vec = [Math.sin(a), 0, Math.cos(a)];
+        marks.push({ p: add(P.head, [n[0] * r[0] * 1.01, 0.45, n[2] * r[2] * 1.01]), color: C.rivet, n });
+      }
     },
   },
   gloves: {
@@ -554,12 +571,23 @@ export const GEAR = {
   },
   sword: {
     slot: 'weapon',
-    // навершие, рукоять в кулаке, гарда поперёк, клинок с острием
-    dress: ({ parts, pose: P }) => {
-      parts.set('pommel', ball(onGrip(P, -2.6), [0.85, 0.85, 0.85], M.gold));
-      parts.set('hilt', rod(onGrip(P, -2.1), onGrip(P, 1.2), 0.6, M.leather));
-      parts.set('guard', brick(onGrip(P, 1.7), [2.5, MIN_HALF, 0.55], gripAxes(P), M.gold));
-      parts.set('blade', brick(onGrip(P, 7.4), [0.95, 5.3, MIN_HALF], gripAxes(P), (s) => (s.y > 0.78 && Math.abs(s.x) > (1 - s.y) * 4.5 ? null : M.steel)));
+    // как в настоящем хвате: плоскость клинка смотрит вбок (в профиль клинок виден широким), кромки — вперёд и назад;
+    // узкое второе сечение даёт клинку ширину и при взгляде спереди и сзади. Дол посередине, светлые кромки,
+    // гарда с шарами на концах, рукоять в обмотке, навершие с камнем.
+    dress: ({ parts, marks, pose: P }) => {
+      const S = SWORD;
+      parts.set('pommel', ball(onGrip(P, -2.6), [0.95, 0.95, 0.95], M.gold));
+      marks.push({ p: onGrip(P, -2.6, 0, -0.95), color: C.gem }, { p: onGrip(P, -2.6, 0, 0.95), color: C.gem });
+      parts.set('hilt', rod(onGrip(P, -2.1), onGrip(P, 1.2), 0.6, (s) => (Math.floor((s.y + 1) * S.wraps) % 2 ? M.leather : M.leatherDark)));
+      parts.set('guard', brick(onGrip(P, 1.7), [0.6, MIN_HALF, S.guard], gripAxes(P), M.gold));
+      for (const end of [-1, 1]) parts.set(`guardEnd${end}`, ball(onGrip(P, 1.7, end * S.guard), [0.7, 0.7, 0.7], M.gold));
+      const tip = (across: number, y: number): boolean => y > S.tipFrom && Math.abs(across) > (1 - y) / (1 - S.tipFrom);
+      parts.set('blade', brick(onGrip(P, S.mid), [MIN_HALF, S.half, S.width], gripAxes(P), (s) => {
+        if (tip(s.z, s.y)) return null;
+        if (Math.abs(s.z) > 0.78) return M.steel;                         // режущие кромки — светлые
+        return Math.abs(s.z) < 0.22 && s.y < S.tipFrom ? M.fuller : M.steel;
+      }));
+      parts.set('bladeEdge', brick(onGrip(P, S.mid), [S.edge, S.half, MIN_HALF], gripAxes(P), (s) => (tip(s.x, s.y) ? null : M.steel)));
     },
   },
   bow: {
@@ -680,31 +708,40 @@ export function heroSheetJobs(scene: Phaser.Scene, outfit: Outfit, body: BodyId 
   const key = heroSheetKey(outfit, body);
   if (scene.textures.exists(key)) return [];
   const { build } = BODIES[body];
-  const F = build.frame * RES, rows = PLAYER_DIRECTIONS.length;
+  const F = Math.round(build.frame * RES), rows = PLAYER_DIRECTIONS.length;
   const perJob = Math.max(1, Math.floor(PIXELS_PER_JOB / (F * F)));
   const strikes = outfit.weapon && MELEE.has(outfit.weapon) ? HERO_SHEET.attackFrames : 0, columns = COLUMNS + strikes;
   let tex: Phaser.Textures.CanvasTexture | null = null;
   const jobs: (() => void)[] = [() => {
-    tex = scene.textures.createCanvas(key, F * columns, F * rows);
+    tex = readableCanvas(scene, key, F * columns, F * rows);
     if (tex) tex.getContext().imageSmoothingEnabled = false;
   }];
-  for (let col = 0; col < columns; col++) for (let row0 = 0; row0 < rows; row0 += perJob) jobs.push(() => {
-    if (!tex) return;
-    const c = tex.getContext();
+  for (let col = 0; col < columns; col++) for (let row0 = 0; row0 < rows; row0 += perJob) {
     const row1 = Math.min(rows, row0 + perJob), x0 = col * F, y0 = row0 * F, h = (row1 - row0) * F;
     const kind: PoseKind = col < HERO_SHEET.walkFrames ? 'walk' : col < COLUMNS ? 'idle' : 'attack';
     const p = kind === 'walk' ? col / HERO_SHEET.walkFrames : kind === 'idle' ? (col - HERO_SHEET.walkFrames) / HERO_SHEET.idleFrames : (col - COLUMNS) / HERO_SHEET.attackFrames;
-    const model = dressFor(outfit, body, kind, p);
-    const parts = [...model.parts.values()];
-    const img = c.createImageData(F, h);
-    for (let row = row0; row < row1; row++) {
-      const facing = FACING[PLAYER_DIRECTIONS[row]!] * DEG, feet = kind === 'attack' ? strikeFeet(build, row, col - COLUMNS) : { x: build.frame / 2, y: build.ground };
-      renderModel({ data: img.data, width: F, x: 0, y: (row - row0) * F, w: F, h: F }, feet.x * RES, feet.y * RES, parts, model.marks, { facing, scale: RES });
-    }
-    c.putImageData(img, x0, y0);
-    addVolume(c, F, h, F, F, x0, y0);
-    addOutline(c, F, h, F, F, x0, y0);
-  });
+    // кадры рисуются полосами строк (крупный огр или король — за несколько заданий), потом светотень и контур
+    let img: ImageData | null = null, model: ReturnType<typeof dressFor> | null = null, parts: Part[] = [];
+    for (const [s0, s1] of strips(F, h)) jobs.push(() => {
+      if (!tex) return;
+      if (!img || !model) { img = tex.getContext().createImageData(F, h); model = dressFor(outfit, body, kind, p); parts = [...model.parts.values()]; }
+      for (let row = row0; row < row1; row++) {
+        // часть кадра этой строки, попавшая в полосу [s0, s1)
+        const top = (row - row0) * F, a = Math.max(s0, top), b = Math.min(s1, top + F);
+        if (b <= a) continue;
+        const facing = FACING[PLAYER_DIRECTIONS[row]!] * DEG, feet = kind === 'attack' ? strikeFeet(build, row, col - COLUMNS) : { x: build.frame / 2, y: build.ground };
+        renderModel({ data: img.data, width: F, x: 0, y: a, w: F, h: b - a }, feet.x * RES, feet.y * RES - (a - top), parts, model.marks, { facing, scale: RES });
+      }
+    });
+    jobs.push(() => {
+      if (!tex || !img) return;
+      const c = tex.getContext();
+      c.putImageData(img, x0, y0);
+      addVolume(c, F, h, F, F, x0, y0);
+      addOutline(c, F, h, F, F, x0, y0);
+      img = null; model = null; parts = [];
+    });
+  }
   jobs.push(() => {
     if (!tex) return;
     tex.refresh(); tex.setFilter(Phaser.Textures.FilterMode.NEAREST);

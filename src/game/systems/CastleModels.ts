@@ -16,7 +16,6 @@ const TAU = Math.PI * 2;
 /** Анимации объектов: число кадров в цикле и скорость (кадров в секунду). Больше кадров — плавнее движение. */
 export const ANIM = {
   banner: { frames: 32, rate: 20 },
-  gate: { frames: 32, rate: 24 },
   brazier: { frames: 24, rate: 24 },
   merchant: { frames: 32, rate: 16 },
   catRun: { frames: 12, rate: 20 },
@@ -68,8 +67,54 @@ export function drawModel(c: CanvasRenderingContext2D, x0: number, y0: number, w
   c.restore();
 }
 
+/**
+ * Холст текстуры, из которого часто читают пиксели (светотень, контур, рисование по полосам): браузер держит его
+ * в обычной памяти, а не в видеокарте — чтение быстрое, экран загрузки не подвисает. Пустой, если ключ уже занят.
+ */
+export function readableCanvas(scene: Phaser.Scene, key: string, w: number, h: number): Phaser.Textures.CanvasTexture | null {
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  canvas.getContext('2d', { willReadFrequently: true });
+  return scene.textures.addCanvas(key, canvas);
+}
+
 /** Сколько пикселей холста рисовать за одно задание экрана загрузки (больше — рывок анимации загрузки). */
 const PIXELS_PER_JOB = 96 * 64 * RES * RES * 2;
+/**
+ * Крупная модель (стена, кадр огра или короля) больше одного задания — рисуется полосами строк по столько пикселей
+ * (около 10 мс): ни одно задание не дольше кадра, анимация загрузки идёт ровно.
+ */
+export const STRIP_PIXELS = PIXELS_PER_JOB / 4;
+
+/** Полосы строк [начало, конец) высоты h при ширине w — по STRIP_PIXELS пикселей. */
+export function strips(w: number, h: number): [number, number][] {
+  const rows = Math.max(1, Math.floor(STRIP_PIXELS / Math.max(1, w))), out: [number, number][] = [];
+  for (let y = 0; y < h; y += rows) out.push([y, Math.min(h, y + rows)]);
+  return out;
+}
+
+/**
+ * Модель в холст по полосам (x0, y0 — пиксели холста): задания для экрана загрузки. model — строится при первом задании.
+ * Холст читается один раз в начале и пишется один раз в конце: чтение холста посреди рисования медленное.
+ */
+export function drawModelJobs(ctx: () => CanvasRenderingContext2D, x0: number, y0: number, w: number, h: number, anchor: Anchor, model: () => Model, view: Partial<View> = {}): (() => void)[] {
+  const W = Math.round(w * RES), H = Math.round(h * RES);
+  let built: Model | null = null, img: ImageData | null = null;
+  const jobs = strips(W, H).map(([r0, r1]) => () => {
+    const m = built ??= model(), buf = img ??= ctx().getImageData(x0, y0, W, H);
+    renderModel({ data: buf.data, width: W, x: 0, y: r0, w: W, h: r1 - r0 }, anchor.x * RES, anchor.y * RES - r0, m.parts, m.marks ?? [], { facing: 0, scale: RES, ...view });
+  });
+  jobs.push(() => {
+    const m = built ??= model(), c = ctx();
+    if (img) c.putImageData(img, x0, y0);
+    img = null;
+    if (!m.overlay) return;
+    c.save(); c.translate(x0, y0); c.beginPath(); c.rect(0, 0, W, H); c.clip(); c.scale(RES, RES);
+    m.overlay(c);
+    c.restore();
+  });
+  return jobs;
+}
 
 /**
  * Лист кадров из 3D-модели: w x h пикселей игры на кадр, frames кадров. Задания рисуют по несколько кадров
@@ -81,17 +126,20 @@ export function modelSheetJobs(scene: Phaser.Scene, key: string, w: number, h: n
   let tex: Phaser.Textures.CanvasTexture | null = null;
   const jobs: (() => void)[] = [() => {
     if (scene.textures.exists(key)) scene.textures.remove(key);
-    tex = scene.textures.createCanvas(key, W * frames, H);
+    tex = readableCanvas(scene, key, W * frames, H);
     if (!tex) return;
     tex.getContext().imageSmoothingEnabled = false;
     (tex.customData as ResData).resolution = RES;
   }];
-  for (let f0 = 0; f0 < frames; f0 += perJob) jobs.push(() => {
-    if (!tex) return;
-    const c = tex.getContext(), f1 = Math.min(frames, f0 + perJob);
-    for (let f = f0; f < f1; f++) drawModel(c, f * W, 0, w, h, anchor, build(f), view);
-    addVolume(c, (f1 - f0) * W, H, W, H, f0 * W); addOutline(c, (f1 - f0) * W, H, W, H, f0 * W);
-  });
+  const ctx = (): CanvasRenderingContext2D => tex!.getContext();
+  for (let f0 = 0; f0 < frames; f0 += perJob) {
+    const f1 = Math.min(frames, f0 + perJob);
+    // кадр крупнее задания — по полосам; несколько мелких кадров — за одно задание
+    if (perJob === 1 && W * H > STRIP_PIXELS) jobs.push(...drawModelJobs(ctx, f0 * W, 0, w, h, anchor, () => build(f0), view).map((job) => () => { if (tex) job(); }));
+    else jobs.push(() => { if (tex) for (let f = f0; f < f1; f++) drawModel(ctx(), f * W, 0, w, h, anchor, build(f), view); });
+    // светотень и контур — по кадру за задание
+    for (let f = f0; f < f1; f++) jobs.push(() => { if (tex) { addVolume(ctx(), W, H, W, H, f * W); addOutline(ctx(), W, H, W, H, f * W); } });
+  }
   jobs.push(() => {
     if (!tex) return;
     tex.refresh(); tex.setFilter(Phaser.Textures.FilterMode.NEAREST);
@@ -103,10 +151,30 @@ export function modelSheetJobs(scene: Phaser.Scene, key: string, w: number, h: n
   return jobs;
 }
 
+/**
+ * Холст в GAME.resolution раз детальнее, по заданиям (для стен): первое создаёт холст (если его ещё нет — иначе все
+ * задания пропускаются), steps — шаги рисования (ctx — холст), последнее регистрирует текстуру.
+ */
+export function hiresTextureJobs(scene: Phaser.Scene, key: string, w: number, h: number, steps: (ctx: () => CanvasRenderingContext2D) => (() => void)[]): (() => void)[] {
+  let tex: Phaser.Textures.CanvasTexture | null = null;
+  const ctx = (): CanvasRenderingContext2D => tex!.getContext();
+  return [
+    () => {
+      if (scene.textures.exists(key)) return;
+      tex = readableCanvas(scene, key, w * RES, h * RES);
+      if (!tex) return;
+      tex.getContext().imageSmoothingEnabled = false;
+      (tex.customData as ResData).resolution = RES;
+    },
+    ...steps(ctx).map((step) => () => { if (tex) step(); }),
+    () => { tex?.refresh(); tex?.setFilter(Phaser.Textures.FilterMode.NEAREST); tex = null; },
+  ];
+}
+
 /** Холст в GAME.resolution раз детальнее (для стен): рисует paint и регистрирует текстуру. */
 export function hiresTexture(scene: Phaser.Scene, key: string, w: number, h: number, paint: (c: CanvasRenderingContext2D) => void): void {
   if (scene.textures.exists(key)) scene.textures.remove(key);
-  const tex = scene.textures.createCanvas(key, w * RES, h * RES);
+  const tex = readableCanvas(scene, key, w * RES, h * RES);
   if (!tex) return;
   const c = tex.getContext(); c.imageSmoothingEnabled = false;
   (tex.customData as ResData).resolution = RES;
@@ -217,41 +285,6 @@ function banner(f: number): Model {
   return { parts };
 }
 
-/** Ворота 88x86: кладка из выпуклых камней, арка, в проёме переливается портал, решётка, табличка с камнем, порог. */
-function gate(f: number): Model {
-  const t = (f / ANIM.gate.frames) * TAU;
-  const archTop = (x: number): number => 58 + 16 * Math.sqrt(Math.max(0, 1 - (x / 24) ** 2));
-  const inOpening = (x: number, y: number, pad = 0): boolean => Math.abs(x) <= 24 + pad && y <= archTop(x) + pad;
-  const silhouette = (x: number, y: number): boolean => Math.abs(x) <= 41 && y <= 70 + 14 * Math.sqrt(Math.max(0, 1 - (x / 42) ** 2));
-  const parts: Part[] = [
-    box([0, 42, -4], [41, 42, 1.5], (s) => { const x = s.x * 41, y = 42 + s.y * 42; return !silhouette(x, y) || inOpening(x, y) ? null : '#20283a'; }),
-    box([0, 37, -5], [24, 37, 0.5], (s) => {
-      const x = s.x * 24, y = 37 + s.y * 37;
-      if (!inOpening(x, y)) return null;
-      const v = Math.sin(x * 0.25 + (84 - y) * 0.18 - t) + Math.sin((84 - y) * 0.3 + t * 2 - x * 0.1);
-      return v > 1.3 ? '#9ff5ea' : v > 0.6 ? '#5fe0d4' : v > -0.2 ? '#2a8a8e' : v > -1 ? '#1a5a66' : '#123a48';
-    }),
-  ];
-  for (let row = 0; row < 9; row++) for (let col = -4; col <= 4; col++) {
-    const x = col * 14 + (row % 2) * 7, y = 5 + row * 9.2;
-    if (!silhouette(x, y) || inOpening(x, y, 6) || Math.abs(x) > 38) continue;
-    parts.push(ball([x, y, -2], [6.8, 4.4, 2.4], hash(x, y, 3) > 0.7 ? M.stoneDark : M.stone));
-  }
-  for (let k = 0; k <= 8; k++) {   // камни арки по контуру проёма
-    const a = (k / 8) * Math.PI;
-    parts.push(ball([26.5 * Math.cos(a), 58 + 18.5 * Math.sin(a), 0], [4.6, 4.2, 2.6], M.stoneLight));
-  }
-  for (const y of [6, 18, 30, 42]) for (const x of [-27, 27]) parts.push(ball([x, y, 0], [4, 5.4, 2.6], M.stoneLight));
-  for (const x of [-17, -8.5, 0, 8.5, 17]) parts.push(rod([x, 27, -1.5], [x, 60, -1.5], 1.1, M.ironLight), ball([x, 25.6, -1.5], [1.2, 1.6, 1.2], M.ironLight));
-  parts.push(
-    cyl([-23, 62, -1.5], [23, 62, -1.5], 1.8, M.iron),
-    box([0, 80, 1], [8, 3.5, 1], M.gold),
-    ball([0, 80, 2.4], [2.4, 2.2, 1.2], ramp(['#2a8a8e', '#5fe0d4', '#9ff5ea'][Math.round((0.5 - 0.5 * Math.cos(t)) * 2)]!)),
-    box([0, 1.2, 1.5], [42, 1.2, 3], M.stoneLight),
-  );
-  return { parts };
-}
-
 /**
  * Торговец 52x40 сидит у колонны на ящике: перед ним коврик с товаром (зелья, шлем, меч, монеты, свиток),
  * рядом заплечный мешок со скаткой; дышит, моргает, подбрасывает монету.
@@ -354,7 +387,6 @@ export function propTextureJobs(scene: Phaser.Scene): (() => void)[] {
   return [
     ...sheet('castle_banner', 30, 58, ANIM.banner, { x: 15, y: 57 }, banner),
     ...modelSheetJobs(scene, 'castle_pillar', 32, 64, 1, 1, { x: 16, y: 60 }, pillar),
-    ...sheet('castle_gate', 88, 86, ANIM.gate, { x: 44, y: 84 }, gate),
     ...sheet('castle_brazier', 24, 32, ANIM.brazier, { x: 12, y: 29 }, brazier),
     ...sheet('castle_merchant', 52, 40, ANIM.merchant, { x: 26, y: 31 }, merchant, MERCHANT_FACING),
     ...sheet('cat_run', 20, 16, ANIM.catRun, { x: 10, y: 15 }, catRun),

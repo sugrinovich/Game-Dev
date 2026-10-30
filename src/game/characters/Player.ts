@@ -1,16 +1,16 @@
 import Phaser from 'phaser';
 import type { PlayerConfig } from '../configs/characters';
 import { HERO_ORIGIN, TEXTURES, type PlayerDirection } from '../configs/assets';
-import { COLORS } from '../configs/game';
+import { COLORS, KEYS } from '../configs/game';
 import { SETTINGS } from '../configs/settings';
 import { session } from '../state/Session';
 import { EQUIPMENT, EQUIPMENT_IDS, type EquipmentId } from '../configs/items';
-import { ensureHeroSheet, facingOf, GEAR, heroAnimKey, heroAttackFrame, playKeepingStep, STARTER_OUTFIT, type HeroAnimKind, type Outfit } from '../systems/HeroArt';
+import { ensureHeroSheet, facingOf, FIGURE_SCALE, GEAR, heroAnimKey, heroAttackFrame, playKeepingStep, STARTER_OUTFIT, type HeroAnimKind, type Outfit } from '../systems/HeroArt';
 import type { Arena } from '../types';
 import { SLASH_ORIGIN } from '../systems/MobArt';
 
 type MoveKeys = Record<'up' | 'down' | 'left' | 'right', Phaser.Input.Keyboard.Key>;
-type ActionKeys = Record<'interact' | 'interact2', Phaser.Input.Keyboard.Key>;
+type ActionKeys = Record<'interact', Phaser.Input.Keyboard.Key>;
 type Buffered = 'attack' | 'dash' | 'interact' | 'potion';
 
 /** Нажатие запоминается на это время: быстрый тап не потеряется даже при просадке кадров. */
@@ -20,8 +20,9 @@ const INPUT_BUFFER_SECONDS = 0.18;
  * (0 — занесено, 1–2 — рывок, 3 — удар ровно в strikeAt, 4 — проводка, 5 — возврат).
  */
 const SWING = { strikeAt: 0.07, length: 0.24, frames: [0.03, 0.055, 0.07, 0.13, 0.2] } as const;
+/** Клавиши действий (KEYS): удар — в ту сторону, куда смотрит герой. Правый Shift — та же клавиша рывка. */
 const ACTION_CODES: Record<string, Buffered> = {
-  Space: 'attack', KeyJ: 'attack', ShiftLeft: 'dash', ShiftRight: 'dash', KeyK: 'dash', KeyE: 'interact', Enter: 'interact', KeyQ: 'potion',
+  [KEYS.attack.code]: 'attack', [KEYS.dash.code]: 'dash', ShiftRight: 'dash', [KEYS.interact.code]: 'interact', [KEYS.potion.code]: 'potion',
 };
 
 /** Во что одет герой: стартовая одежда, поверх — надетые предметы (каждый занимает свой слот). */
@@ -29,6 +30,8 @@ export function outfitFor(equipped: Record<EquipmentId, boolean>): Outfit {
   const outfit: Outfit = { ...STARTER_OUTFIT };
   for (const id of EQUIPMENT_IDS) {
     const wear = EQUIPMENT[id].wear;
+    // в руке — только основное оружие; без него — палка из стартового набора
+    if (EQUIPMENT[id].kind === 'weapon' && id !== session.mainWeapon) continue;
     if (equipped[id] && wear) outfit[GEAR[wear].slot] = wear;
   }
   return outfit;
@@ -38,10 +41,12 @@ export function outfitFor(equipped: Record<EquipmentId, boolean>): Outfit {
 function equippedMask(): number {
   let mask = 0;
   for (let i = 0; i < EQUIPMENT_IDS.length; i++) if (session.data.equipped[EQUIPMENT_IDS[i]!]) mask |= 1 << i;
-  return mask;
+  // и какое оружие в руке
+  const main = session.mainWeapon;
+  return mask + (main ? (EQUIPMENT_IDS.indexOf(main) + 1) << EQUIPMENT_IDS.length : 0);
 }
 
-/** Персонаж игрока: движение стрелками / WASD, взмах оружием, рывок и анимации. Внешний вид зависит от надетых вещей. */
+/** Персонаж игрока: движение WASD, взмах оружием (пробел, по направлению взгляда), рывок и анимации. Внешний вид зависит от надетых вещей. */
 export class Player extends Phaser.GameObjects.Sprite {
   readonly config: PlayerConfig;
   /** Вызывается один раз, когда здоровье кончилось. */
@@ -50,7 +55,6 @@ export class Player extends Phaser.GameObjects.Sprite {
   /** Блокирует управление (диалоги, переходы). */
   frozen = false;
 
-  private readonly cursors: Phaser.Types.Input.Keyboard.CursorKeys;
   private readonly wasd: MoveKeys;
   private readonly act: ActionKeys;
   private readonly buffers: Record<Buffered, number> = { attack: 0, dash: 0, interact: 0, potion: 0 };
@@ -84,7 +88,7 @@ export class Player extends Phaser.GameObjects.Sprite {
     this.sheet = sheet;
     this.config = config;
     this.setOrigin(HERO_ORIGIN.x, HERO_ORIGIN.y);
-    this.setDisplaySize(config.displaySize, config.displaySize);
+    this.setDisplaySize(config.displaySize * FIGURE_SCALE, config.displaySize * FIGURE_SCALE);
     this.texture.setFilter(Phaser.Textures.FilterMode.NEAREST);
     this.shadow = scene.add.image(x, y, TEXTURES.shadow).setScale(0.8);
 
@@ -96,10 +100,9 @@ export class Player extends Phaser.GameObjects.Sprite {
       throw new Error('Keyboard input is unavailable.');
     }
     const K = Phaser.Input.Keyboard.KeyCodes;
-    this.cursors = keyboard.createCursorKeys();
     this.wasd = keyboard.addKeys({ up: K.W, down: K.S, left: K.A, right: K.D }) as MoveKeys;
-    this.act = keyboard.addKeys({ interact: K.E, interact2: K.ENTER }) as ActionKeys;
-    keyboard.addKeys({ a: K.SPACE, b: K.SHIFT, c: K.Q, d: K.J, e: K.K });   // перехват, чтобы браузер не прокручивал страницу
+    this.act = keyboard.addKeys({ interact: K.E }) as ActionKeys;
+    keyboard.addKeys({ a: K.SPACE, b: K.SHIFT, c: K.Q, d: K.TAB });   // перехват: браузер не прокручивает страницу и не уводит фокус по TAB
     keyboard.on('keydown', this.onKeyDown);
     this.once(Phaser.GameObjects.Events.DESTROY, () => { this.shadow.destroy(); keyboard.off('keydown', this.onKeyDown); });
   }
@@ -118,6 +121,14 @@ export class Player extends Phaser.GameObjects.Sprite {
   }
 
   get facingVec(): { x: number; y: number } { return { x: this.aimX, y: this.aimY }; }
+
+  /** Перенос (например, к трону после отдыха): вместе с тенью, лицом к камере, в покое. */
+  teleport(x: number, y: number): void {
+    this.setPosition(x, y).setDepth(y);
+    this.shadow.setPosition(x, y + 1).setDepth(y - 0.5);
+    this.setAim(0, 1);
+    playKeepingStep(this, this.animKey('idle'));
+  }
   get invulnerable(): boolean { return this.iFrames > 0 || this.dashT > 0; }
   get isDashing(): boolean { return this.dashT > 0; }
 
@@ -128,21 +139,12 @@ export class Player extends Phaser.GameObjects.Sprite {
   }
 
   interactPressed(): boolean { return this.take('interact'); }
-  interactHeld(): boolean { return this.act.interact.isDown || this.act.interact2.isDown; }
+  interactHeld(): boolean { return this.act.interact.isDown; }
   /** Сбрасывает «только что нажато» у всех клавиш (пока открыто меню). */
   drain(): void {
     for (const k of Object.keys(this.buffers) as Buffered[]) this.buffers[k] = 0;
   }
   potionPressed(): boolean { return this.take('potion'); }
-
-  /** Повернуться и ударить в сторону точки (клик мышью). */
-  attackToward(wx: number, wy: number): void {
-    const dx = wx - this.x, dy = wy - (this.y - 8);
-    const l = Math.hypot(dx, dy);
-    if (l < 1) return;
-    this.setAim(dx / l, dy / l);
-    this.tryAttack();
-  }
 
   private setAim(x: number, y: number): void {
     this.aimX = x; this.aimY = y;
@@ -176,10 +178,10 @@ export class Player extends Phaser.GameObjects.Sprite {
     let dx = 0;
     let dy = 0;
     if (!this.frozen) {
-      if (this.cursors.left.isDown || this.wasd.left.isDown) dx -= 1;
-      if (this.cursors.right.isDown || this.wasd.right.isDown) dx += 1;
-      if (this.cursors.up.isDown || this.wasd.up.isDown) dy -= 1;
-      if (this.cursors.down.isDown || this.wasd.down.isDown) dy += 1;
+      if (this.wasd.left.isDown) dx -= 1;
+      if (this.wasd.right.isDown) dx += 1;
+      if (this.wasd.up.isDown) dy -= 1;
+      if (this.wasd.down.isDown) dy += 1;
       if (this.buffers.attack > 0 && this.canAttack()) { this.buffers.attack = 0; this.tryAttack(); }
       if (this.buffers.dash > 0 && this.dashCd <= 0 && this.dashT <= 0) { this.buffers.dash = 0; this.tryDash(dx, dy); }
     }
@@ -224,7 +226,7 @@ export class Player extends Phaser.GameObjects.Sprite {
 
   private updateAttack(dt: number): void {
     if (this.attackT <= 0) {
-      this.setAngle(0).setScale(this.config.displaySize / this.width);
+      this.setAngle(0).setScale((this.config.displaySize * FIGURE_SCALE) / this.width);
       return;
     }
     this.attackT += dt;
@@ -238,7 +240,7 @@ export class Player extends Phaser.GameObjects.Sprite {
     const lean = Math.sin(k * Math.PI) * 9;
     this.setAngle((this.aimX >= 0 ? 1 : -1) * lean * (this.aimX === 0 ? 0 : 1));
     const sq = Math.sin(k * Math.PI) * 0.08;
-    const base = this.config.displaySize / this.width;
+    const base = (this.config.displaySize * FIGURE_SCALE) / this.width;
     this.setScale(base * (1 + sq), base * (1 - sq * 0.8));
     if (t >= SWING.length) this.attackT = 0;
   }

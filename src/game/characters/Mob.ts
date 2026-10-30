@@ -4,7 +4,7 @@ import { COLORS, DEPTH } from '../configs/game';
 import { TEXTURES, type PlayerDirection } from '../configs/assets';
 import { SETTINGS } from '../configs/settings';
 import { session } from '../state/Session';
-import { ensureHeroSheet, facingOf, heroAnimKey, heroAttackFrame, heroOrigin, playKeepingStep } from '../systems/HeroArt';
+import { ensureHeroSheet, facingOf, FIGURE_SCALE, heroAnimKey, heroAttackFrame, heroOrigin, playKeepingStep } from '../systems/HeroArt';
 import type { Arena, Point } from '../types';
 
 const SPEED_VARIATION = { min: 0.9, max: 1.15 } as const;
@@ -52,7 +52,7 @@ export abstract class Mob extends Phaser.GameObjects.Sprite {
 
     scene.add.existing(this);
     // displaySize — ширина на экране; высота — в тех же пропорциях, что и кадр
-    this.setScale((config.displaySize / this.width) * (variant.scale ?? 1));
+    this.setScale(((config.displaySize * FIGURE_SCALE) / this.width) * (variant.scale ?? 1));
     this.baseScale = this.scaleX;
     const origin = heroOrigin(config.body);
     this.setOrigin(origin.x, origin.y);

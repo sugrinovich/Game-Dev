@@ -186,23 +186,13 @@ function charset(): string[] {
 
 type Art = (string | null)[][];
 
-/** Увеличение готовой цветной буквы вдвое по правилу Scale2x: угол пикселя берёт цвет соседей, если там ступенька. */
-function scale2x(src: Art): Art {
-  const at = (x: number, y: number): string | null | undefined => src[y]?.[x];
-  const out: Art = Array.from({ length: src.length * 2 }, () => new Array<string | null>(src[0]!.length * 2).fill(null));
-  src.forEach((line, y) => line.forEach((p, x) => {
-    const a = at(x, y - 1) ?? null, b = at(x + 1, y) ?? null, c = at(x - 1, y) ?? null, d = at(x, y + 1) ?? null;
-    out[2 * y]![2 * x] = c === a && c !== d && a !== b ? a : p;
-    out[2 * y]![2 * x + 1] = a === b && a !== c && b !== d ? b : p;
-    out[2 * y + 1]![2 * x] = d === c && d !== b && c !== a ? c : p;
-    out[2 * y + 1]![2 * x + 1] = b === d && b !== a && d !== c ? d : p;
-  }));
-  return out;
-}
 
-/** Буква в пикселях холста: раскрашенная в пикселях игры и увеличенная Scale2x до чёткости игры. */
+/**
+ * Буква в пикселях холста: раскрашенная в пикселях игры и увеличенная простым удвоением пикселей до чёткости игры.
+ * (Сглаживание Scale2x дорисовывало точки на стыках диагоналей — буквы выглядели неровными.)
+ */
 function hiresArt(art: Art): Art {
-  for (let k = 1; k < GAME.resolution; k *= 2) art = scale2x(art);
+  for (let k = 1; k < GAME.resolution; k *= 2) art = art.flatMap((line) => { const row = line.flatMap((p) => [p, p]); return [row, [...row]]; });
   return art;
 }
 
@@ -235,9 +225,13 @@ const BLADE = ['#ffffff', '#ffffff', '#f3f6f9', '#eef2f6', '#eef2f6', '#eaeff4',
  * extrude — глубина выдавленной нижней грани (её оттенки; пусто — буква плоская).
  */
 export const FONTS = {
-  ui: { scale: 1, pen: false, bevel: false, spacing: 1, space: 3, lineHeight: 12, ramp: BLADE, extrude: [] },
-  big: { scale: 2, pen: true, bevel: false, spacing: 2, space: 6, lineHeight: 22, ramp: BLADE, extrude: [] },
-  title: { scale: 2, pen: true, bevel: true, spacing: 2, space: 6, lineHeight: 22, ramp: BLADE, extrude: ['#686868', '#444444'] },
+  // в окнах, на кнопках и лентах — чистые ровные буквы без тёмного контура (контур давал «полоски» между буквами)
+  ui: { scale: 1, pen: false, bevel: false, outline: false, spacing: 1, space: 3, lineHeight: 12, ramp: BLADE, extrude: [] },
+  big: { scale: 2, pen: false, bevel: false, outline: false, spacing: 2, space: 6, lineHeight: 22, ramp: BLADE, extrude: [] },
+  title: { scale: 2, pen: false, bevel: true, outline: true, spacing: 2, space: 6, lineHeight: 22, ramp: BLADE, extrude: ['#686868', '#444444'] },
+  // надписи прямо на игровом поле (подписи на полу, всплывающие числа, «!») — с контуром, иначе теряются на камне
+  world: { scale: 1, pen: false, bevel: false, outline: true, spacing: 1, space: 3, lineHeight: 12, ramp: BLADE, extrude: [] },
+  worldBig: { scale: 2, pen: false, bevel: false, outline: true, spacing: 2, space: 6, lineHeight: 22, ramp: BLADE, extrude: [] },
 } as const;
 /** Контур и тень букв (тинт их почти не меняет — тёмное остаётся тёмным). */
 const INK = '#140f1c';
@@ -264,6 +258,7 @@ function shadeGlyph(bmp: boolean[][], key: FontKey): Art {
       if (row[x + PAD.left] === null) row[x + PAD.left] = extrude[d - 1]!;
     }
   }));
+  if (!f.outline) return out;
   // контур вокруг буквы и её «толщины» + тень вправо-вниз
   const solid = out.map((row) => row.map((v) => v !== null));
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
@@ -274,6 +269,19 @@ function shadeGlyph(bmp: boolean[][], key: FontKey): Art {
   return out;
 }
 export type FontKey = keyof typeof FONTS;
+/**
+ * Где внутри строки шрифта нарисованы буквы (пиксели игры от верха строки; измерено по рисункам букв с контуром):
+ * top — между верхом заглавных и строчных, bottom — низ букв, center — их середина. По center надпись ставится ровно
+ * посередине кнопки, ленты или строки меню (высота строки шрифта больше самих букв).
+ */
+export const FONT_INK: Record<FontKey, { top: number; bottom: number; center: number }> = {
+  // буквы без контура (измерено на экране; bottom — первая строка под буквами): ui — 7 строк, big — 16
+  ui: { top: 2, bottom: 9, center: 5.5 },
+  big: { top: 4, bottom: 20, center: 12 },
+  title: { top: 5, bottom: 21, center: 13 },
+  world: { top: 2, bottom: 11, center: 6.5 },
+  worldBig: { top: 5, bottom: 20, center: 12.5 },
+};
 
 interface CharData {
   x: number; y: number; width: number; height: number; centerX: number; centerY: number;
@@ -291,9 +299,14 @@ function makeFont(scene: Phaser.Scene, key: FontKey): void {
   const placed = glyphs.map((g) => {
     const bmp = bitmap(g.cell.rows, f.scale, f.pen);
     const art = hiresArt(shadeGlyph(bmp, key));
-    const w = art[0]!.length, h = art.length, advance = (bmp[0]!.length + f.spacing) * R;
+    // пустые столбцы по краям рисунка буквы не в счёт: иначе между буквами появляются лишние зазоры
+    const cols = bmp[0]!.length, used = (cx: number): boolean => bmp.some((line) => line[cx] === true);
+    let lead = 0, trail = 0;
+    while (lead < cols - 1 && !used(lead)) lead++;
+    while (trail < cols - 1 - lead && !used(cols - 1 - trail)) trail++;
+    const w = art[0]!.length, h = art.length, advance = (cols - lead - trail + f.spacing) * R;
     if (x + w + gap > W) { x = gap; y += rowH + gap; rowH = 0; }
-    const at = { ...g, art, x, y, w, h, advance };
+    const at = { ...g, art, x, y, w, h, advance, lead };
     x += w + gap; rowH = Math.max(rowH, h);
     return at;
   });
@@ -307,14 +320,14 @@ function makeFont(scene: Phaser.Scene, key: FontKey): void {
   tex.refresh(); tex.setFilter(Phaser.Textures.FilterMode.NEAREST);
 
   const chars: Record<number, CharData> = {};
-  const add = (code: number, px: number, py: number, w: number, h: number, yOffset: number, advance: number): void => {
+  const add = (code: number, px: number, py: number, w: number, h: number, yOffset: number, advance: number, lead = 0): void => {
     chars[code] = {
       x: px, y: py, width: w, height: h, centerX: Math.floor(w / 2), centerY: Math.floor(h / 2),
-      xOffset: -PAD.left * GAME.resolution, yOffset, xAdvance: advance, data: {}, kerning: {},
+      xOffset: -(PAD.left + lead) * GAME.resolution, yOffset, xAdvance: advance, data: {}, kerning: {},
       u0: px / W, v0: 1 - py / H, u1: (px + w) / W, v1: 1 - (py + h) / H,
     };
   };
-  for (const p of placed) add(p.ch.charCodeAt(0), p.x, p.y, p.w, p.h, (p.cell.row * f.scale - PAD.top) * R, p.advance);
+  for (const p of placed) add(p.ch.charCodeAt(0), p.x, p.y, p.w, p.h, (p.cell.row * f.scale - PAD.top) * R, p.advance, p.lead);
   add(32, 0, 0, 0, 0, 0, (f.space + f.spacing) * R);
   if (scene.cache.bitmapFont.exists(key)) scene.cache.bitmapFont.remove(key);
   // размер шрифта — в пикселях холста; PText просит размер в пикселях игры, и буквы показываются уменьшенными
@@ -326,6 +339,8 @@ export function makePixelFonts(scene: Phaser.Scene): void {
   makeFont(scene, 'ui');
   makeFont(scene, 'big');
   makeFont(scene, 'title');
+  makeFont(scene, 'world');
+  makeFont(scene, 'worldBig');
 }
 
 /** Для проверки вне игры: рисунок символа в пикселях. */

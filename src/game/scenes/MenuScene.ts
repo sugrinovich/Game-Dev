@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { COLORS, GAME, GLINT_EVERY, SCENES } from '../configs/game';
+import { COLORS, GAME, GLINT_EVERY, KEYS, SCENES } from '../configs/game';
 import { addTitleLogo, SiegeBackdrop, TITLE_DEPTH } from '../systems/TitleArt';
 import { audio } from '../systems/Sfx';
 import { session } from '../state/Session';
@@ -8,7 +8,6 @@ import { drawPanel, UI } from '../ui/Panel';
 import { addIcon } from '../systems/IconArt';
 
 interface Item { label: string; enabled: boolean; run: () => void }
-type Page = 'main' | 'confirm' | 'bye';
 
 const W = GAME.width;
 const H = GAME.height;
@@ -18,7 +17,6 @@ const MENU = { w: 170, rowH: 20, top: 124, pennant: 15 } as const;
 
 /** Титульный экран: заставка «Осада Бездны» и меню «Начать игру / Продолжить / Выйти». */
 export class MenuScene extends Phaser.Scene {
-  private page: Page = 'main';
   private items: Item[] = [];
   private sel = 0;
   private ui!: Phaser.GameObjects.Container;
@@ -32,7 +30,6 @@ export class MenuScene extends Phaser.Scene {
 
   create(): void {
     this.busy = false;
-    this.page = 'main';
     this.cameras.main.setZoom(GAME.resolution).centerOn(W / 2, H / 2).fadeIn(500, 0, 0, 0);
     new SiegeBackdrop(this);
     this.add.image(0, 0, 'title_vignette').setOrigin(0, 0).setDepth(TITLE_DEPTH.vignette).setAlpha(0.55);
@@ -73,7 +70,7 @@ export class MenuScene extends Phaser.Scene {
       const hl = this.add.graphics();
       hl.setName(`hl${i}`);
       this.ui.add(hl);
-      const label = new PText(this, W / 2, ry + 4, it.label, { ax: 0.5, color: it.enabled ? COLORS.label : COLORS.dim, shine: it.enabled });
+      const label = new PText(this, W / 2, PText.centerY(ry + (rowH - 2) / 2), it.label, { ax: 0.5, color: it.enabled ? COLORS.label : COLORS.dim, shine: it.enabled });
       label.setName(`lb${i}`);
       this.ui.add(label);
       const zone = this.add.zone(px - 4, ry, bw + 8, rowH - 2).setOrigin(0, 0).setInteractive({ useHandCursor: it.enabled });
@@ -105,7 +102,6 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private showMain(): void {
-    this.page = 'main';
     const hasSave = session.hasSave();
     this.show([
       { label: 'Начать игру', enabled: true, run: () => (hasSave ? this.showConfirm() : this.startNew()) },
@@ -115,7 +111,6 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private showConfirm(): void {
-    this.page = 'confirm';
     this.show([
       { label: 'Да, начать заново', enabled: true, run: () => this.startNew() },
       { label: 'Отмена', enabled: true, run: () => this.showMain() },
@@ -141,7 +136,6 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private bye(): void {
-    this.page = 'bye';
     this.busy = true;
     this.cameras.main.fadeOut(900, 0, 0, 0);
     this.cameras.main.once(Phaser.Cameras.Scene2D.Events.FADE_OUT_COMPLETE, () => {
@@ -159,10 +153,9 @@ export class MenuScene extends Phaser.Scene {
     this.wake();
     if (this.busy) return;
     const n = this.items.length;
-    if (ev.code === 'ArrowDown' || ev.code === 'KeyS') this.move(1, n);
-    else if (ev.code === 'ArrowUp' || ev.code === 'KeyW') this.move(-1, n);
-    else if (ev.code === 'Enter' || ev.code === 'Space' || ev.code === 'KeyE') this.activate(this.sel);
-    else if (ev.code === 'Escape' && this.page === 'confirm') this.showMain();
+    if (ev.code === KEYS.down.code) this.move(1, n);
+    else if (ev.code === KEYS.up.code) this.move(-1, n);
+    else if (ev.code === KEYS.interact.code) this.activate(this.sel);
   }
 
   private move(d: number, n: number): void {

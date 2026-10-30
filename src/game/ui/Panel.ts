@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { COLORS } from '../configs/game';
 import { session } from '../state/Session';
+import { FONT_INK } from './PixelFont';
 import { PText } from './PText';
 import { addIcon } from '../systems/IconArt';
 
@@ -63,19 +64,50 @@ export function drawPanel(g: Phaser.GameObjects.Graphics, x: number, y: number, 
 /** Алая лента с раздвоенными хвостами — под заголовки окон, баннеры и цель. cx — центр, w — ширина ленты. */
 export function drawRibbon(g: Phaser.GameObjects.Graphics, cx: number, y: number, w: number, h = 14, alpha = 1): void {
   const x = Math.round(cx - w / 2);
-  // хвосты позади ленты, с вырезом «ласточкин хвост»
+  // концы ленты: загнуты назад и чуть ниже основной полосы, на внешнем крае — вырез «ласточкин хвост»
+  const tail = Math.max(8, Math.round(h * 0.55)), drop = Math.max(3, Math.round(h * 0.2)), notch = Math.max(3, Math.round(h * 0.25));
   for (const side of [-1, 1] as const) {
-    const ex = side < 0 ? x - 8 : x + w + 8, ix = side < 0 ? x + 2 : x + w - 2;
-    const top = y + 3, bottom = y + h + 1, notchX = ex - side * 4, notchY = (top + bottom) / 2;
+    const inner = side < 0 ? x + 3 : x + w - 3, outer = side < 0 ? x - tail : x + w + tail;
+    const top = y + drop, bottom = y + h + drop, mid = (top + bottom) / 2, cut = outer - side * notch;
     g.fillStyle(UI.clothDark, alpha);
-    g.fillTriangle(ix, top, ex, top, notchX, notchY);
-    g.fillTriangle(ix, top, notchX, notchY, ix, bottom);
-    g.fillTriangle(ix, bottom, notchX, notchY, ex, bottom);
+    g.fillTriangle(inner, top, outer, top, cut, mid);
+    g.fillTriangle(inner, top, cut, mid, inner, bottom);
+    g.fillTriangle(inner, bottom, cut, mid, outer, bottom);
+    // кромки хвоста и тёмная складка там, где лента уходит назад
+    g.fillStyle(UI.goldDark, alpha).fillRect(Math.min(inner, outer), top, Math.abs(outer - inner), 1).fillRect(Math.min(inner, outer), bottom - 1, Math.abs(outer - inner), 1);
+    const edge = side < 0 ? x : x + w;
+    g.fillStyle(0x2a0810, alpha).fillTriangle(edge, y + h, edge + side * 3, y + h, edge + side * 3, y + h + drop);
   }
   g.fillStyle(UI.cloth, alpha).fillRect(x, y, w, h);
   g.fillStyle(UI.clothLight, alpha).fillRect(x, y + 1, w, 1);
   g.fillStyle(UI.clothDark, alpha).fillRect(x, y + h - 2, w, 1);
   g.fillStyle(UI.gold, alpha).fillRect(x, y, w, 1).fillRect(x, y + h - 1, w, 1);
+}
+
+/** y надписи на кнопке drawButton: буквы посередине видимого поля (между верхним кантом и тёмной полосой снизу). */
+export function buttonTextY(y: number, h: number): number { return PText.centerY(y + (h - 1) / 2); }
+
+/** Кнопка: алая полоса с золотыми кантами; под курсором (hover) — светлее, с бликом сверху. */
+export function drawButton(g: Phaser.GameObjects.Graphics, x: number, y: number, w: number, h: number, hover: boolean): void {
+  g.fillStyle(hover ? UI.clothLight : UI.cloth, 1).fillRect(x, y, w, h);
+  g.fillStyle(0xffffff, hover ? 0.22 : 0.1).fillRect(x, y + 1, w, 1);
+  g.fillStyle(UI.clothDark, 1).fillRect(x, y + h - 2, w, 1);
+  g.fillStyle(hover ? UI.goldLight : UI.gold, 1).fillRect(x, y, w, 1).fillRect(x, y + h - 1, w, 1);
+}
+
+/** Поля ленты заголовка вокруг самих букв (не строки шрифта): надпись не прилипает к золотым кантам. */
+export const TITLE_RIBBON = { padX: 14, padY: 5, minW: 80 } as const;
+/**
+ * Лента заголовка окна (шрифт big): по центру cx, середина ленты — на cy (обычно верхняя кромка окна), высота — по
+ * буквам плюс поля, ширина — по надписи. Возвращает y для надписи, чтобы буквы встали ровно посередине ленты.
+ */
+export function drawTitleRibbon(g: Phaser.GameObjects.Graphics, cx: number, cy: number, textW: number): number {
+  // высота: буквы + поля + кант сверху, тёмная полоса и кант снизу — поля над и под буквами равны
+  const ink = FONT_INK.big, h = ink.bottom - ink.top + TITLE_RIBBON.padY * 2 + 3;
+  const w = Math.max(TITLE_RIBBON.minW, Math.round(textW + TITLE_RIBBON.padX * 2)), y = Math.round(cy - h / 2);
+  drawRibbon(g, cx, y, w, h);
+  // середина видимого поля: от строки под верхним кантом до строки над тёмной полосой снизу
+  return PText.centerY(y + (h - 2) / 2, 'big');
 }
 
 export interface BarColors { fill: number; light: number; back: number }
@@ -104,6 +136,19 @@ export function drawBar(g: Phaser.GameObjects.Graphics, x: number, y: number, w:
   drawDiamond(g, x + w + 2, y + Math.floor(h / 2));
 }
 
+/** Выпадающий список (оружие в руке): тёмное поле, железный кант, золотые уголки — как у окон. */
+export function drawDropdown(g: Phaser.GameObjects.Graphics, x: number, y: number, w: number, h: number): void {
+  g.fillStyle(UI.ironDark, 0.98).fillRect(x, y, w, h);
+  g.lineStyle(1, UI.iron, 1).strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  g.fillStyle(UI.gold, 1).fillRect(x, y, 2, 2).fillRect(x + w - 2, y, 2, 2).fillRect(x, y + h - 2, 2, 2).fillRect(x + w - 2, y + h - 2, 2, 2);
+}
+
+/** Выбранная строка списка — как в окнах выбора: алая полоса с золотыми кантами сверху и снизу. */
+export function drawRowHighlight(g: Phaser.GameObjects.Graphics, x: number, y: number, w: number, h: number): void {
+  g.fillStyle(UI.clothDark, 0.9).fillRect(x, y, w, h);
+  g.fillStyle(UI.gold, 1).fillRect(x, y, w, 1).fillRect(x, y + h - 1, w, 1);
+}
+
 /** Небольшая плашка: подсказки, всплывающие сообщения, кнопки. Золотой кант сверху и уголки. */
 export function drawPlate(g: Phaser.GameObjects.Graphics, x: number, y: number, w: number, h: number, alpha = 0.8): void {
   g.fillStyle(UI.ironDark, alpha).fillRect(x + 1, y, w - 2, h).fillRect(x, y + 1, w, h - 2);
@@ -112,10 +157,11 @@ export function drawPlate(g: Phaser.GameObjects.Graphics, x: number, y: number, 
 }
 
 /** Цена «монета + число»: зелёная, если хватает монет. Отрисовка слева направо от x. Возвращает ширину. */
-export function addCostRow(scene: Phaser.Scene, parent: Phaser.GameObjects.Container, x: number, y: number, price: number, enabled = true): number {
-  const icon = addIcon(scene, x, y + 6, 'castle_coin', 0.75).setOrigin(0, 0.5);
+/** Цена: монета и число, оба по середине строки centerY. */
+export function addCostRow(scene: Phaser.Scene, parent: Phaser.GameObjects.Container, x: number, centerY: number, price: number, enabled = true): number {
+  const icon = addIcon(scene, x, centerY, 'castle_coin', 0.75).setOrigin(0, 0.5);
   if (!enabled) icon.setAlpha(0.5);
-  const t = new PText(scene, x + 13, y + 2, `${price}`, { color: session.data.coins >= price ? COLORS.good : COLORS.bad });
+  const t = new PText(scene, x + 13, PText.centerY(centerY), `${price}`, { color: session.data.coins >= price ? COLORS.good : COLORS.bad });
   parent.add([icon, t]);
   return 13 + t.textWidth;
 }

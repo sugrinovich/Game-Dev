@@ -1,12 +1,12 @@
 import Phaser from 'phaser';
 import { TEXTURES } from '../configs/assets';
 import { COLORS, GAME, GLINT_EVERY, SCENES } from '../configs/game';
-import { LOCATIONS, ROOM_IDS, roomEntry } from '../configs/items';
+import { LOCATIONS, ROOM_IDS } from '../configs/items';
 import { ENEMY_TYPES } from '../configs/characters';
 import { ensureArrowTexture } from '../characters/Skeleton';
 import { PText, startGlints } from '../ui/PText';
 import { drawDiamond, drawPlate, UI } from '../ui/Panel';
-import { ARENA_SIZE, arenaGroundKey, castleGroundJobs, castleTextureJobs, HALL_GROUND_KEY, HALL_SIZE, paintCastleFront, portcullisJobs, ROOM_SIZE, roomGroundKey, roomPassages } from '../systems/CastleArt';
+import { ARENA_SIZE, arenaGroundKey, castleGroundJobs, castleFrontJobs, castleTextureJobs, HALL_GROUND_KEY, HALL_SIZE, ROOM_SIZE, roomGroundKey } from '../systems/CastleArt';
 import { Effects } from '../systems/Effects';
 import { heroSheetJobs, STARTER_OUTFIT } from '../systems/HeroArt';
 import { effectTextureJobs } from '../systems/MobArt';
@@ -97,19 +97,15 @@ export class PreloadScene extends Phaser.Scene {
       {
         label: 'Мостим залы и арены', jobs: [
           ...castleGroundJobs(this, HALL_GROUND_KEY, HALL_SIZE.w, HALL_SIZE.h, 'hall'),
-          () => paintCastleFront(this, HALL_SIZE.w, HALL_SIZE.h, 'hall', null),
-          // арены: у каждой комнаты свои проёмы (вход и выход) — одинаковые стены рисуются один раз
-          ...LOCATIONS.flatMap((loc) => loc.rooms.flatMap((room, i) => {
-            const entry = roomEntry(loc, i), pass = roomPassages(ARENA_SIZE.w, room.exit ? [entry, room.exit] : [entry]);
-            return [
-              ...castleGroundJobs(this, arenaGroundKey(loc.theme), ARENA_SIZE.w, ARENA_SIZE.h, loc.theme, pass),
-              () => paintCastleFront(this, ARENA_SIZE.w, ARENA_SIZE.h, loc.theme, pass.bottom ?? null),
-            ];
-          })),
-          ...portcullisJobs(this),
+          ...castleFrontJobs(this, HALL_SIZE.w, HALL_SIZE.h, 'hall', null),
+          // арены: четыре сплошные стены
+          ...LOCATIONS.flatMap((loc) => [
+            ...castleGroundJobs(this, arenaGroundKey(loc.theme), ARENA_SIZE.w, ARENA_SIZE.h, loc.theme),
+            ...castleFrontJobs(this, ARENA_SIZE.w, ARENA_SIZE.h, loc.theme, null),
+          ]),
           // комнаты тронного зала: покои, кузня, целебница — со своими стенами и проёмом в зал
           ...ROOM_IDS.flatMap((id) => castleGroundJobs(this, roomGroundKey(id), ROOM_SIZE.w, ROOM_SIZE.h, id)),
-          ...ROOM_IDS.map((id) => () => paintCastleFront(this, ROOM_SIZE.w, ROOM_SIZE.h, id, ROOM_SIZE.w / 2)),
+          ...ROOM_IDS.flatMap((id) => castleFrontJobs(this, ROOM_SIZE.w, ROOM_SIZE.h, id, ROOM_SIZE.w / 2)),
         ],
       },
       // заранее — стартовая одежда; другие наборы рисуются при переодевании (около 30 мс, в окне инвентаря — на паузе)

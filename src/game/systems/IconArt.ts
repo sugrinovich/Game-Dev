@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { GAME } from '../configs/game';
 import { MODEL_AXES as MODEL_AXES_I, renderModel, type Axes, type Mark, type Part, type Surface, type Vec } from './Rig3D';
 import { addOutline, type Ramp as Ramp3 } from './Volume';
+import { readableCanvas } from './CastleModels';
 
 /*
  * Иконки и эмблемы — объёмные, как предметы в локациях. Приём «выпуклой подушки» (emboss):
@@ -269,24 +270,11 @@ function gloveModel(): IconModel {
   };
 }
 
-/** Руна ярости: тёмный плоский камень, на лицевой стороне горит знак. */
-function runeModel(): IconModel {
-  const glyph = (s: Surface): boolean => {
-    const x = Math.abs(s.x), y = s.y;
-    return (x < 0.08 && Math.abs(y) < 0.62) || (x < 0.42 && Math.abs(y - 0.2 - x * 0.9) < 0.08) || (x < 0.36 && Math.abs(y + 0.42 - x * 0.9) < 0.08);
-  };
-  return {
-    facing: -0.3,
-    parts: [icBall([0, 0, 0], [5.4, 7, 2.6], (s) => (s.z > 0.4 && glyph(s) ? '#e8b0ff' : I.slate))],
-    marks: [{ p: [0, 0.6, 2.7], color: GLINT, n: [0, 0, 1] }],
-  };
-}
-
 /** Модель → текстура size x size пикселей игры (в GAME.resolution раз детальнее) с тонким контуром. */
 function modelTexture(scene: Phaser.Scene, key: string, model: IconModel, size = ICON_SIZE): void {
   if (scene.textures.exists(key)) scene.textures.remove(key);
   const F = size * GAME.resolution;
-  const tex = scene.textures.createCanvas(key, F, F);
+  const tex = readableCanvas(scene, key, F, F);
   if (!tex) return;
   const c = tex.getContext(); c.imageSmoothingEnabled = false;
   const img = c.createImageData(F, F);
@@ -320,7 +308,7 @@ export function paintCrest(c: Ctx): void {
 /** Холст → рисунок → контур → текстура. */
 function iconTexture(scene: Phaser.Scene, key: string, w: number, h: number, paint: (c: Ctx) => void): void {
   if (scene.textures.exists(key)) scene.textures.remove(key);
-  const tex = scene.textures.createCanvas(key, w, h);
+  const tex = readableCanvas(scene, key, w, h);
   if (!tex) return;
   const c = tex.getContext(); c.imageSmoothingEnabled = false;
   paint(c);
@@ -339,7 +327,7 @@ export function iconTextureJobs(scene: Phaser.Scene): (() => void)[] {
     ['ui_heart', heartModel], ['ui_potion', potionModel], ['ui_dash', bootModel],
     ['castle_coin', coinModel], ['castle_sword', swordModel], ['castle_armor', armorModel],
     ['castle_satchel', satchelModel], ['castle_potion', potionModel],
-    ['item_helmet', helmetModel], ['item_greaves', greavesModel], ['item_gloves', gloveModel], ['item_rune', runeModel],
+    ['item_helmet', helmetModel], ['item_greaves', greavesModel], ['item_gloves', gloveModel],
   ];
   return icons.map(([key, model]) => () => modelTexture(scene, key, model()));
 }

@@ -1,9 +1,8 @@
 import Phaser from 'phaser';
 import { TEXTURES } from '../configs/assets';
 import { DEPTH, GAME } from '../configs/game';
-import type { PassageConfig } from '../configs/items';
 import type { Colliders } from './Colliders';
-import { ball, box, cyl, drawModel, hash, hiresTexture, propTextureJobs, stoneAt, yaw, type Masonry, type Model } from './CastleModels';
+import { ball, box, cyl, drawModelJobs, hash, hiresTextureJobs, propTextureJobs, readableCanvas, stoneAt, yaw, type Masonry, type Model } from './CastleModels';
 import { CAMERA_PITCH, type Mark, type Part, type Shade } from './Rig3D';
 import { addOutline, addVolume, ramp, roundCorners, tone } from './Volume';
 
@@ -15,11 +14,23 @@ import { addOutline, addVolume, ramp, roundCorners, tone } from './Volume';
 
 /** Темы: тронный зал, три арены и две комнаты зала (кузня, целебница). */
 export type CastleTheme = 'hall' | 'courtyard' | 'crypt' | 'forge' | 'smithy' | 'apothecary';
-/** Границы, за которые не пройти: у краёв карты (боковых стен нет) — side, задняя стена — top, нижняя — bottom. */
+/** Границы, за которые не пройти: задняя стена — top, нижняя — bottom. */
 export const CASTLE_BOUNDS = { side: 8, top: 88, bottom: 24 } as const;
+/** Четыре стены у всех карт (зал, его комнаты, арены): толщина боковой стены — она же граница по бокам. */
+export const ROOM_BOUNDS = { ...CASTLE_BOUNDS, side: 28 } as const;
+/** Разлом Бездны на полу арены (снизу посередине, up — от нижнего края карты): здесь герой приходит и уходит в замок. */
+export const ARENA_RIFT = { up: 80, r: 26 } as const;
+/** Круг ристалища на полу арены: середина (от середины карты вниз) и полуоси — выше разлома, не задевает его. */
+const ARENA_RING = { dy: 0, rx: 170, ry: 110 } as const;
+/**
+ * Мягкость пола: шов между плитами — тон плиты темнее на столько (а не почти чёрный), доля плит с трещиной
+ * и с камешком, прозрачность трещин. Мелкие контрастные штрихи на каждой плите заставляли пол рябить.
+ */
+const FLOOR_SOFT = { joint: -0.32, cracks: 0.12, pebbles: 0.06, crackAlpha: '40' } as const;
 /** Размеры карт: зал замка, арена и комната зала (пол рисуется заранее, при загрузке). */
 export const HALL_SIZE = { w: 640, h: 496 } as const;
-export const ARENA_SIZE = { w: 560, h: 384 } as const;
+/** Арена просторная: на дальних волнах врагов много. */
+export const ARENA_SIZE = { w: 800, h: 512 } as const;
 export const ROOM_SIZE = { w: 480, h: 280 } as const;
 export const HALL_GROUND_KEY = 'base-ground';
 export function arenaGroundKey(theme: CastleTheme): string { return `arena-ground-${theme}`; }
@@ -55,14 +66,10 @@ const LAYOUTS: Record<CastleTheme, WallLayout> = {
 };
 
 /**
- * Ворота в задней и нижней стене — сквозной проём во всю высоту стены: полуширина (пиксели); у всех ворот по краям —
- * одинаковые столбы: полуширина и полуглубина, насколько выше стены (единицы модели), радиус золотого шара на макушке.
+ * Проём в нижней стене комнаты зала (выход в зал) — во всю высоту стены: полуширина (пиксели); по краям — столбы:
+ * полуширина и полуглубина, насколько выше стены (единицы модели), радиус золотого шара на макушке.
  */
-export const GATE = { half: 20, post: { half: 6, rise: 8 }, finial: 3.6 } as const;
-/** Проёмы комнаты арены (пиксели карты): x ворот в задней стене и в нижней. */
-export interface RoomPassages { top?: number; bottom?: number }
-/** Решётки ворот задней и нижней стены (ключи текстур). */
-export const PORTCULLIS = { top: 'portcullis-top', front: 'portcullis-front' } as const;
+const GATE = { half: 20, post: { half: 6, rise: 8 }, finial: 3.6 } as const;
 /** Луч света из витража: размер текстуры и число пылинок в нём. */
 const SHAFT = { w: 94, h: 152, dust: 7 } as const;
 
@@ -79,7 +86,7 @@ export function poly(c: CanvasRenderingContext2D, color: string, points: number[
 /** volume — наложить светотень и контур (см. Volume.ts); для объектов да, для пола и иконок нет. */
 export function texture(scene: Phaser.Scene, key: string, w: number, h: number, paint: Paint2D, volume = false): void {
   if (scene.textures.exists(key)) scene.textures.remove(key);
-  const tex = scene.textures.createCanvas(key, w, h);
+  const tex = readableCanvas(scene, key, w, h);
   if (!tex) return;
   const ctx = tex.getContext(); ctx.imageSmoothingEnabled = false;
   paint(ctx);
@@ -119,7 +126,7 @@ export function sheetJobs(scene: Phaser.Scene, key: string, w: number, h: number
   let tex: Phaser.Textures.CanvasTexture | null = null;
   const jobs: (() => void)[] = [() => {
     if (scene.textures.exists(key)) scene.textures.remove(key);
-    tex = scene.textures.createCanvas(key, w * frames, h);
+    tex = readableCanvas(scene, key, w * frames, h);
     if (tex) tex.getContext().imageSmoothingEnabled = false;
   }];
   for (let f0 = 0; f0 < frames; f0 += FRAMES_PER_JOB) {
@@ -165,30 +172,31 @@ const hash2 = hash;
 function paintFloor(scene: Phaser.Scene, key: string, w: number, h: number, theme: CastleTheme): void {
   const p = PALETTES[theme];
   texture(scene, key, w, h, (c) => {
-    rect(c, '#151b27', 0, 0, w, h);
+    rect(c, tone(p.floor[0], FLOOR_SOFT.joint), 0, 0, w, h);
     for (let y = 80; y < h; y += 16) for (let x = 0; x < w + 32; x += 32) {
       const tx = x - (Math.floor(y / 16) % 2) * 16;
-      const tone = Math.floor(hash2(x, y, 73) * p.floor.length);
-      rect(c, p.floor[tone]!, tx, y, 31, 15);
+      const shade = Math.floor(hash2(x, y, 73) * p.floor.length);
+      rect(c, p.floor[shade]!, tx, y, 31, 15);
       rect(c, '#ffffff10', tx, y, 30, 1); rect(c, '#ffffff08', tx, y + 1, 1, 13);
       rect(c, '#00000026', tx + 1, y + 14, 30, 1); rect(c, '#0000001c', tx + 30, y + 1, 1, 13);
-      if (hash2(x, y, 91) > 0.65) { rect(c, '#20273666', tx + 10, y + 6, 5, 1); rect(c, '#20273666', tx + 15, y + 7, 1, 3); px(c, '#20273666', tx + 16, y + 10); }
+      const crack = `${tone(p.floor[0], -0.5)}${FLOOR_SOFT.crackAlpha}`;
+      if (hash2(x, y, 91) > 1 - FLOOR_SOFT.cracks) { rect(c, crack, tx + 10, y + 6, 5, 1); rect(c, crack, tx + 15, y + 7, 1, 3); px(c, crack, tx + 16, y + 10); }
       if (hash2(x, y, 17) > 0.85) for (let i = 0; i < 5; i++) px(c, i % 2 ? '#5a7a4c88' : '#4f6a4888', tx + 2 + Math.floor(hash2(x, y, i + 30) * 26), y + 11 + (i % 3));
-      if (hash2(x, y, 53) > 0.9) { rect(c, '#232a38', tx + 20, y + 9, 2, 1); px(c, '#8a90a0', tx + 20, y + 8); }
+      if (hash2(x, y, 53) > 1 - FLOOR_SOFT.pebbles) { rect(c, `${tone(p.floor[0], -0.3)}`, tx + 20, y + 9, 2, 1); px(c, `${tone(p.floor[0], 0.25)}`, tx + 20, y + 8); }
     }
     if (theme === 'hall') {
       paintCarpet(c, w / 2, HALL_FIRE.y - HALL_FIRE.rift + 6, p);
       paintRift(c, HALL_FIRE.x, HALL_FIRE.y, HALL_FIRE.rift);
     } else if (!ARENA_THEMES.includes(theme)) {
       paintRoomFloor(c, w, h, theme);
-      paintWallShadows(c, w);
+      paintWallShadows(c, w, h);
       return;
     } else {
       c.strokeStyle = p.trim; c.lineWidth = 2;
-      c.beginPath(); c.ellipse(w / 2, h / 2 + 20, 112, 78, 0, 0, Math.PI * 2); c.stroke();
-      c.lineWidth = 1; c.beginPath(); c.ellipse(w / 2, h / 2 + 20, 104, 72, 0, 0, Math.PI * 2); c.stroke();
+      c.beginPath(); c.ellipse(w / 2, h / 2 + ARENA_RING.dy, ARENA_RING.rx, ARENA_RING.ry, 0, 0, Math.PI * 2); c.stroke();
+      c.lineWidth = 1; c.beginPath(); c.ellipse(w / 2, h / 2 + ARENA_RING.dy, ARENA_RING.rx - 8, ARENA_RING.ry - 6, 0, 0, Math.PI * 2); c.stroke();
       for (let i = 0; i < 8; i++) {
-        const a = i * Math.PI / 4, x = w / 2 + Math.cos(a) * 108, y = h / 2 + 20 + Math.sin(a) * 75;
+        const a = i * Math.PI / 4, x = w / 2 + Math.cos(a) * (ARENA_RING.rx - 4), y = h / 2 + ARENA_RING.dy + Math.sin(a) * (ARENA_RING.ry - 3);
         rect(c, p.trim, Math.round(x) - 2, Math.round(y) - 2, 4, 4); px(c, '#ffffff55', Math.round(x) - 2, Math.round(y) - 2);
       }
       if (theme === 'forge') for (let i = 0; i < 40; i++) {
@@ -196,18 +204,23 @@ function paintFloor(scene: Phaser.Scene, key: string, w: number, h: number, them
         rect(c, '#ff6a2a66', x, y, 3 + (i % 4), 1); px(c, '#ffc06088', x + 1, y);
       }
     }
-    if (theme === 'hall') shield(c, w / 2 - 9, 140, p.cloth); else shield(c, w / 2 - 9, h / 2 + 4, p.cloth);
+    if (theme === 'hall') shield(c, w / 2 - 9, 140, p.cloth);
+    else { shield(c, w / 2 - 9, h / 2 - 12, p.cloth); paintRift(c, w / 2, h - ARENA_RIFT.up, ARENA_RIFT.r); }
     edgeShade(c, w, h);
-    paintWallShadows(c, w);
+    paintWallShadows(c, w, h);
   });
 }
 
-/** Тень задней стены на полу: чёткая полоса и мягкий край под ней. */
-const WALL_SHADOW = { back: 12, alpha: 0.42, fade: 3 } as const;
-function paintWallShadows(c: CanvasRenderingContext2D, w: number): void {
-  const S = WALL_SHADOW, top = WALL.floorY;
-  rect(c, `rgba(6, 8, 16, ${S.alpha})`, 0, top, w, S.back);
-  rect(c, `rgba(6, 8, 16, ${S.alpha * 0.4})`, 0, top + S.back, w, S.fade);
+/** Тени стен на полу: чёткая полоса под задней стеной; у боковых стен — справа от левой шире, слева от правой уже. */
+const WALL_SHADOW = { back: 12, left: 9, right: 4, alpha: 0.42, fade: 3 } as const;
+function paintWallShadows(c: CanvasRenderingContext2D, w: number, h: number): void {
+  const S = WALL_SHADOW, top = WALL.floorY, band = (x: number, y: number, bw: number, bh: number, a: number): void => rect(c, `rgba(6, 8, 16, ${a})`, x, y, bw, bh);
+  band(0, top, w, S.back, S.alpha);
+  band(0, top + S.back, w, S.fade, S.alpha * 0.4);
+  const side = ROOM_BOUNDS.side, y0 = top + S.back, len = h - WALL.front.h - y0;
+  band(side, y0, S.left, len, S.alpha);
+  band(side + S.left, y0, S.fade, len, S.alpha * 0.4);
+  band(w - side - S.right, y0, S.right, len, S.alpha * 0.6);
 }
 
 /** Мягкое затемнение пола у нижней стены. */
@@ -300,11 +313,6 @@ const BACK_CAP_Y = Math.round(WALL.floorY - WALL.face * Math.cos(CAMERA_PITCH)) 
 const FLOOR_DEPTH = 1 / Math.sin(CAMERA_PITCH);
 /** Где у нижней стены верх кромки (от верха её слоя). */
 const FRONT_CAP_TOP = Math.round(WALL.front.h - WALL.front.face * Math.cos(CAMERA_PITCH)) - WALL.cap;
-/**
- * Решётка ворот стоит посередине толщины стены, между столбами: на столько пикселей выше линии пола у лицевой грани
- * (у задней стены — выше её линии пола, у нижней — выше нижнего края карты).
- */
-export const GATE_BARS_UP = WALL.cap / 2;
 
 /** Кладка передней грани стены: камни 32 x 12.5, каждый второй ряд сдвинут на половину. */
 function faceGrid(p: Palette, y0: number): Masonry {
@@ -426,16 +434,14 @@ function plinthParts(parts: Part[], len: number, gaps: readonly (readonly [numbe
 }
 
 /** Лицевая грань задней стены с окнами и дверными проёмами: низ — на линии пола (кромка сверху — capModel). */
-function backWallModel(w: number, theme: CastleTheme, gateX?: number): Model {
+function backWallModel(w: number, theme: CastleTheme): Model {
   const parts: Part[] = [], marks: Mark[] = [], p = PALETTES[theme], layout = LAYOUTS[theme], doors = layout.doors;
-  const windows = layout.windows.map((k) => w * k), inGate = (x: number): boolean => gateX !== undefined && Math.abs(x - gateX) < GATE.half;
+  const windows = layout.windows.map((k) => w * k);
   wallBlock(parts, w, WALL.plinth * 2, WALL.face, 0, p.wall, p, 7,
-    (x, y) => inGate(x) || windows.some((wx) => inNiche(x - wx, y)) || doors.some((dx) => inDoorway(x - dx, y)));
-  const gaps = doors.map((dx) => [dx, DOORWAY.half] as const);
-  plinthParts(parts, w, gateX === undefined ? gaps : [...gaps, [gateX, GATE.half + GATE.post.half * 2] as const], p);
+    (x, y) => windows.some((wx) => inNiche(x - wx, y)) || doors.some((dx) => inDoorway(x - dx, y)));
+  plinthParts(parts, w, doors.map((dx) => [dx, DOORWAY.half] as const), p);
   for (const wx of windows) windowParts(parts, marks, wx, p);
   for (const dx of doors) doorwayParts(parts, dx, p);
-  if (gateX !== undefined) gatePosts(parts, w, gateX, WALL.face, WALL.floorY, p);
   return { parts, marks };
 }
 
@@ -457,7 +463,7 @@ function gatePost(parts: Part[], c: readonly [number, number], half: readonly [n
 }
 
 /**
- * Пара столбов по краям ворот в задней или нижней стене: от внутреннего края стены до её лицевой грани
+ * Пара столбов по краям проёма в нижней стене комнаты зала: от внутреннего края стены до её лицевой грани
  * (и на 2 единицы вперёд — столб чуть выступает). wallH — высота стены, anchorY — экранная y пола у лицевой грани.
  */
 function gatePosts(parts: Part[], w: number, gateX: number, wallH: number, anchorY: number, p: Palette): void {
@@ -473,14 +479,6 @@ function paintFrontDark(c: CanvasRenderingContext2D, gateX: number, top: number)
   const g = c.createLinearGradient(0, y0, 0, y1);
   g.addColorStop(0, 'rgba(5, 6, 10, 0)'); g.addColorStop(1, 'rgba(5, 6, 10, 0.85)');
   c.fillStyle = g; c.fillRect((gateX - GATE.half) * R, y0, GATE.half * 2 * R, y1 - y0);
-}
-
-/** Ворота в задней стене: за проёмом — коридор, уходящий во тьму (рисуется под стеной, виден только в проёме). */
-function paintBackCorridor(c: CanvasRenderingContext2D, gateX: number, p: Palette): void {
-  const R = GAME.resolution, x = (gateX - GATE.half) * R, y0 = BACK_CAP_Y * R, y1 = WALL.floorY * R;
-  const g = c.createLinearGradient(0, y1, 0, y0);
-  g.addColorStop(0, tone(p.floor[0], -0.2)); g.addColorStop(0.55, tone(p.floor[0], -0.65)); g.addColorStop(1, '#05060a');
-  c.fillStyle = g; c.fillRect(x, y0, GATE.half * 2 * R, y1 - y0);
 }
 
 /**
@@ -531,10 +529,10 @@ function capModel(w: number, thick: number, y0: number, p: Palette, topLine: (x:
   };
 }
 
-/** Кромка в текстуру: вид сверху, прямо в пиксели игры (x0, y0 — пиксели игры). */
-function drawCap(c: CanvasRenderingContext2D, x0: number, y0: number, w: number, h: number, model: Model): void {
+/** Кромка в текстуру: вид сверху, прямо в пиксели игры (x0, y0 — пиксели игры); по полосам. */
+function capJobs(ctx: () => CanvasRenderingContext2D, x0: number, y0: number, w: number, h: number, model: () => Model): (() => void)[] {
   const R = GAME.resolution;
-  drawModel(c, x0 * R, y0 * R, w, h, { x: 0, y: 0 }, model, { pitch: Math.PI / 2 });
+  return drawModelJobs(ctx, x0 * R, y0 * R, w, h, { x: 0, y: 0 }, model, { pitch: Math.PI / 2 });
 }
 
 /** Нижняя стена (слой поверх героя): лицевая грань кладки (кромка сверху — capModel); проём для ворот или двери со столбами. */
@@ -545,85 +543,85 @@ function frontWallModel(w: number, h: number, gateX: number | null, p: Palette):
   return { parts };
 }
 
-/** Текстура стены: у комнат арены своя для каждого положения проёма (variant). */
-function wallKey(key: string, part: 'back', variant?: number): string {
-  return `${key}-wall-${part}${variant === undefined ? '' : `-${variant}`}`;
-}
+function wallKey(key: string, part: 'back' | 'left' | 'right'): string { return `${key}-wall-${part}`; }
 
-/** Рисует текстуру, только если её ещё нет (одинаковые стены у разных комнат рисуются один раз). */
+/** Рисует текстуру, только если её ещё нет. */
 function once(scene: Phaser.Scene, key: string, paint: () => void): () => void {
   return () => { if (!scene.textures.exists(key)) paint(); };
 }
 
-/** Пол и стены темы — задания для экрана загрузки (пол — плоский, стены — 3D); pass — проёмы комнаты арены. */
-export function castleGroundJobs(scene: Phaser.Scene, key: string, w: number, h: number, theme: CastleTheme, pass: RoomPassages = {}): (() => void)[] {
-  const p = PALETTES[theme], back = wallKey(key, 'back', pass.top);
+/** 3D-модель целиком в новую текстуру (w x h пикселей игры), по полосам. */
+function modelTextureJobs(scene: Phaser.Scene, key: string, w: number, h: number, anchor: { x: number; y: number }, model: () => Model): (() => void)[] {
+  return hiresTextureJobs(scene, key, w, h, (ctx) => drawModelJobs(ctx, 0, 0, w, h, anchor, model));
+}
+
+/** Пол и четыре стены темы — задания для экрана загрузки (пол — плоский, стены — 3D). */
+export function castleGroundJobs(scene: Phaser.Scene, key: string, w: number, h: number, theme: CastleTheme): (() => void)[] {
+  const p = PALETTES[theme], back = wallKey(key, 'back');
   return [
-    once(scene, back, () => hiresTexture(scene, back, w, WALL.texH, (c) => {
-      const gateX = pass.top;
-      if (gateX !== undefined) paintBackCorridor(c, gateX, p);
-      // сначала кромка, потом стена: столбы ворот выше стены и встают поверх кромки
-      drawCap(c, 0, BACK_CAP_Y, w, WALL.cap, capModel(w, WALL.cap, BACK_CAP_Y, p, () => true, gateX === undefined ? undefined : (x) => Math.abs(x - gateX) < GATE.half));
-      drawModel(c, 0, 0, w, WALL.texH, { x: 0, y: WALL.floorY }, backWallModel(w, theme, gateX));
-    })),
+    // сначала кромка, потом грань стены
+    ...hiresTextureJobs(scene, back, w, WALL.texH, (ctx) => [
+      ...capJobs(ctx, 0, BACK_CAP_Y, w, WALL.cap, () => capModel(w, WALL.cap, BACK_CAP_Y, p, () => true)),
+      ...drawModelJobs(ctx, 0, 0, w, WALL.texH, { x: 0, y: WALL.floorY }, () => backWallModel(w, theme)),
+    ]),
+    ...[true, false].flatMap((left) => modelTextureJobs(scene, wallKey(key, left ? 'left' : 'right'), ROOM_BOUNDS.side, h, { x: 0, y: 0 }, () => sideWallModel(w, h, left, p))),
     once(scene, key, () => paintFloor(scene, key, w, h, theme)),
   ];
 }
 
-/** Где проём в стене комнаты арены: x середины ворот (пиксели карты) в задней или нижней стене. */
-export function passageAt(pass: PassageConfig, w: number): number { return Math.round(w * pass.at); }
-
-/** Все проёмы комнаты арены: вход и выход. */
-export function roomPassages(w: number, list: readonly PassageConfig[]): RoomPassages {
-  const out: RoomPassages = {};
-  for (const pass of list) out[pass.side] = passageAt(pass, w);
-  return out;
-}
-
-/** Решётка ворот — 3D: круглые прутья с остриями внизу и три перекладины, во всю ширину проёма; height — высота стены. */
-function portcullisModel(height: number): Model {
-  const iron = ramp('#4a505e'), tip = ramp('#c0c4d0'), half = GATE.half, parts: Part[] = [];
-  for (let x = -half + 2.5; x <= half - 2.5; x += 5) parts.push(cyl([x, 2, -2], [x, height, -2], 1.3, iron), ball([x, 1.2, -2], [1.2, 2.2, 1.2], tip));
-  for (const k of [0.3, 0.62, 0.94]) parts.push(cyl([-half, height * k, -1.2], [half, height * k, -1.2], 1, iron));
-  return { parts };
-}
-
-/** Решётки ворот задней и нижней стены (высотой со свою стену); низ текстуры — на 1 пиксель ниже острий. */
-export function portcullisJobs(scene: Phaser.Scene): (() => void)[] {
-  const w = GATE.half * 2 + 2;
-  const job = (key: string, height: number): () => void => {
-    const th = Math.ceil(height * Math.cos(CAMERA_PITCH)) + 4;
-    return once(scene, key, () => hiresTexture(scene, key, w, th, (c) => drawModel(c, 0, 0, w, th, { x: w / 2, y: th - 1 }, portcullisModel(height))));
+/**
+ * Боковая стена комнаты — 3D-брусок той же высоты, что и задняя, под той же камерой, что и все объекты. Верх — блоки
+ * той же сетки, что и кромка задней стены (в углу без шва), светлый край у пола, тёмный контур снаружи.
+ */
+function sideWallModel(w: number, h: number, left: boolean, p: Palette): Model {
+  const S = ROOM_BOUNDS.side, H = WALL.face, x0 = left ? 0 : w - S, grid = tileGrid(w);
+  const rim = ramp(tone(p.wall, 0.75)), face = faceGrid(p, 0), ledge = BACK_CAP_Y + WALL.cap, lift = H * Math.cos(CAMERA_PITCH);
+  const z0 = (WALL.floorY - WALL.cap) * FLOOR_DEPTH, z1 = (h + 8) * FLOOR_DEPTH;
+  return {
+    parts: [box([S / 2, H / 2, (z0 + z1) / 2], [S / 2, H / 2, (z1 - z0) / 2], (s) => {
+      const x = S / 2 + (s.x * S) / 2;
+      if (s.n[1] <= 0.5) return stoneAt(face, x, H / 2 + (s.y * H) / 2, p.wall, left ? 21 : 22);
+      // верх бруска на экране поднят над основанием на его высоту
+      const y = ((z0 + z1) / 2 + (s.z * (z1 - z0)) / 2) / FLOOR_DEPTH - lift, inner = left ? S - x : x;
+      if (inner < 1.2 && y > ledge) return rim;
+      if (S - inner < 1.2 || y < BACK_CAP_Y + 1.2) return '#090b12';
+      return capTile(p, x0 + x, y, tone(p.wall, 0.42), grid);
+    })],
   };
-  return [job(PORTCULLIS.top, WALL.face), job(PORTCULLIS.front, WALL.front.face)];
 }
 
 /** Пол и стены темы сразу (если их ещё нет). */
-export function paintCastleGround(scene: Phaser.Scene, key: string, w: number, h: number, theme: CastleTheme, pass: RoomPassages = {}): void {
-  for (const job of castleGroundJobs(scene, key, w, h, theme, pass)) job();
+export function paintCastleGround(scene: Phaser.Scene, key: string, w: number, h: number, theme: CastleTheme): void {
+  for (const job of castleGroundJobs(scene, key, w, h, theme)) job();
 }
 
-/** Ставит пол и заднюю стену (за всеми объектами); pass — проёмы комнаты арены. */
-export function addCastleGround(scene: Phaser.Scene, key: string, _w: number, pass: RoomPassages = {}): void {
+/** Ставит пол, заднюю и боковые стены — за всеми объектами. */
+export function addCastleGround(scene: Phaser.Scene, key: string, w: number): void {
+  const k = 1 / GAME.resolution;
   scene.add.image(0, 0, key).setOrigin(0, 0).setDepth(DEPTH.ground);
-  scene.add.image(0, 0, wallKey(key, 'back', pass.top)).setOrigin(0, 0).setScale(1 / GAME.resolution).setDepth(DEPTH.ground + 1);
+  scene.add.image(0, 0, wallKey(key, 'back')).setOrigin(0, 0).setScale(k).setDepth(DEPTH.ground + 1);
+  // боковые стены ближе к камере, чем задняя: в углах они закрывают её грань
+  scene.add.image(0, 0, wallKey(key, 'left')).setOrigin(0, 0).setScale(k).setDepth(DEPTH.ground + 2);
+  scene.add.image(w - ROOM_BOUNDS.side, 0, wallKey(key, 'right')).setOrigin(0, 0).setScale(k).setDepth(DEPTH.ground + 2);
 }
 
 export function castleFrontKey(theme: CastleTheme, gateX: number | null): string { return `castle-front-${theme}-${gateX ?? 'solid'}`; }
 
 /**
  * Передний парапет и ближние башни — отдельный слой поверх героя: подходя к нижней стене, он заходит за кладку.
- * gateX — середина проёма для ворот (на аренах), null — сплошная стена.
+ * gateX — середина проёма в зал (у комнат зала), null — сплошная стена.
  */
-export function paintCastleFront(scene: Phaser.Scene, w: number, h: number, theme: CastleTheme, gateX: number | null): void {
-  const key = castleFrontKey(theme, gateX);
-  if (scene.textures.exists(key)) return;
+export function castleFrontJobs(scene: Phaser.Scene, w: number, h: number, theme: CastleTheme, gateX: number | null): (() => void)[] {
   const p = PALETTES[theme], F = WALL.front, top = FRONT_CAP_TOP;
-  hiresTexture(scene, key, w, F.h, (c) => {
-    if (gateX !== null) paintFrontDark(c, gateX, top);
-    drawCap(c, 0, Math.max(0, top), w, WALL.cap, capModel(w, WALL.cap, h - F.h + Math.max(0, top), p, () => true, gateX === null ? undefined : (x) => Math.abs(x - gateX) < GATE.half));
-    drawModel(c, 0, 0, w, F.h, { x: 0, y: F.h }, frontWallModel(w, h, gateX, p));
-  });
+  return hiresTextureJobs(scene, castleFrontKey(theme, gateX), w, F.h, (ctx) => [
+    () => { if (gateX !== null) paintFrontDark(ctx(), gateX, top); },
+    ...capJobs(ctx, 0, Math.max(0, top), w, WALL.cap, () => capModel(w, WALL.cap, h - F.h + Math.max(0, top), p, () => true, gateX === null ? undefined : (x) => Math.abs(x - gateX) < GATE.half)),
+    ...drawModelJobs(ctx, 0, 0, w, F.h, { x: 0, y: F.h }, () => frontWallModel(w, h, gateX, p)),
+  ]);
+}
+
+export function paintCastleFront(scene: Phaser.Scene, w: number, h: number, theme: CastleTheme, gateX: number | null): void {
+  for (const job of castleFrontJobs(scene, w, h, theme, gateX)) job();
 }
 
 /** Ставит передний парапет поверх всего на карте и препятствия у оснований четырёх угловых башен (если они есть). */

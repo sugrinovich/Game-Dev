@@ -1,21 +1,23 @@
 import Phaser from 'phaser';
 import { TEXTURES } from '../configs/assets';
 import { COLORS, DEPTH, SCENES } from '../configs/game';
-import { CHEST_UNLOCK, LOCATIONS, ROOM_IDS, ROOMS, WEAPON_NAMES, type LocationId, type RoomId } from '../configs/items';
+import { CHEST, LOCATIONS, ROOM_IDS, ROOMS, type LocationId, type RoomId } from '../configs/items';
 import { AbyssSmoke } from '../systems/AbyssSmoke';
 import { audio } from '../systems/Sfx';
+import { SETTINGS } from '../configs/settings';
 import { PText } from '../ui/PText';
-import { addCastleAmbience, addCastleFront, addCastleGround, CASTLE_BOUNDS, HALL_DOOR_X, HALL_FIRE, HALL_GROUND_KEY, HALL_SIZE, paintCastleGround, WALL_BANNER } from '../systems/CastleArt';
+import { addCastleAmbience, addCastleFront, addCastleGround, HALL_DOOR_X, HALL_FIRE, HALL_GROUND_KEY, HALL_SIZE, paintCastleGround, ROOM_BOUNDS, WALL_BANNER } from '../systems/CastleArt';
 import { textureResolution } from '../systems/CastleModels';
 import { MapBounds } from '../systems/MapBounds';
 import { session, type Report } from '../state/Session';
+import { formatTime, type ExpeditionMode } from './ExpeditionScene';
 import { WorldScene } from './WorldScene';
 import type { ChoiceOption } from './UIScene';
 
 const MAP_W = HALL_SIZE.w;
 const MAP_H = HALL_SIZE.h;
 /** Линия задней стены: проёмы дверей вырезаны в ней (CastleArt.ts), створки стоят в нишах на этой линии. */
-const WALL_Y = CASTLE_BOUNDS.top;
+const WALL_Y = ROOM_BOUNDS.top;
 const THRONE = { x: MAP_W / 2, y: 104 } as const;
 /** Двери комнат в задней стене (x — середина порога): слева от трона — целебница, справа — кузня. */
 const DOORS: Record<RoomId, number> = { apothecary: HALL_DOOR_X[0], smithy: HALL_DOOR_X[1] };
@@ -26,13 +28,17 @@ const STANDARD_Y = (PILLARS[0][1] + PILLARS[2][1]) / 2;
 const STANDARDS = [[PILLARS[0][0], STANDARD_Y], [PILLARS[1][0], STANDARD_Y]] as const;
 const MERCHANT = { x: 178, y: 348 } as const;
 const BANNERS = [110, 262, 378, 530] as const;
-/** Сундук у левой стены и манекены с доспехами вдоль стен. */
-const CHEST = { x: 88, y: 146 } as const;
+/** Сундук-хранилище у левой стены и манекены с доспехами вдоль стен. */
+const CHEST_SPOT = { x: 88, y: 146 } as const;
 const MANNEQUINS = [[84, 238], [556, 238]] as const;
 /** Чёрный костёр: молнии бьют раз в every секунд (случайно в пределах), длина молнии (пиксели), как часто летят искры (с). */
 const RIFT = { bolt: { every: [1.4, 3.2], reach: [70, 110], ms: 130 }, sparkEvery: 0.15 } as const;
 /** Где появляется герой (на сколько пикселей ниже трона, двери или костра). */
 const SPAWN_GAP = { throne: 46, door: 26, fire: 62 } as const;
+/** Вкладки разлома: режимы. */
+const RIFT_TABS = ['Сюжет', 'Рейтинг'] as const;
+/** Искры у трона после отдыха — когда экран уже светлеет (мс от начала отдыха). */
+const REST_FX_DELAY = 3900;
 /** Котик в зале: бегает к случайным точкам пола, иногда садится отдохнуть. Скорость — пиксели в секунду. */
 const CAT = { speed: 70, radius: 4, sitChance: 0.35, area: { x0: 60, x1: 580, y0: 140, y1: 420 } } as const;
 
@@ -42,6 +48,7 @@ interface ReadyMark { x: number; y: number; ready: () => boolean; text: PText | 
 /** Тронный зал — хаб замка: трон павшего короля (сохранение и характеристики), двери комнат, сундук, торговец, чёрный костёр к аренам. */
 export class BaseScene extends WorldScene {
   private leaves = new Map<RoomId, Phaser.GameObjects.Sprite>();
+  private chestSprite: Phaser.GameObjects.Sprite | null = null;
   private marks: ReadyMark[] = [];
   private smoke!: AbyssSmoke;
   private riftGlow!: Phaser.GameObjects.Image;
@@ -52,7 +59,6 @@ export class BaseScene extends WorldScene {
   private petShadow!: Phaser.GameObjects.Image;
   private petTarget = { x: 380, y: 300 };
   private petT = 0;
-  private objT = 0;
   private markT = 0;
   private arrived: Report | null = null;
   private intro = false;
@@ -70,7 +76,7 @@ export class BaseScene extends WorldScene {
     this.leaves.clear();
     this.marks = [];
     this.flies = [];
-    const map = new MapBounds(MAP_W, MAP_H, CASTLE_BOUNDS);
+    const map = new MapBounds(MAP_W, MAP_H, ROOM_BOUNDS);   // в зале есть боковые стены
     paintCastleGround(this, HALL_GROUND_KEY, MAP_W, MAP_H, 'hall');
     addCastleGround(this, HALL_GROUND_KEY, MAP_W);
     this.initWorld(map, 'base');
@@ -95,7 +101,7 @@ export class BaseScene extends WorldScene {
     this.createPlayer(spawn.x, spawn.y);
     this.player.setDepth(spawn.y);
     audio.music('calm');
-    this.whenUi(() => this.refreshObjective());
+    this.whenUi(() => this.ui.showTip('controls'));
 
     this.time.delayedCall(550, () => {
       if (this.arrived) this.showReport(this.arrived);
@@ -136,17 +142,27 @@ export class BaseScene extends WorldScene {
       title: 'Трон павшего короля',
       lines: ['Король давно мёртв. Замок держится на вас.', `Здоровье ${session.hp}/${session.maxHp} · кошелёк: ${session.data.coins} монет`],
       options: [
-        { label: 'Сохранить игру', desc: 'Отдохнуть у трона: здоровье восстановится.', onChoose: () => { this.rest(); } },
+        { label: 'Отдохнуть и сохранить', desc: 'Здоровье и эликсир восполнятся, игра сохранится.', onChoose: () => { this.rest(); } },
         { label: 'Закрыть', onChoose: () => undefined },
       ],
       width: 320,
     });
   }
 
+  /**
+   * Отдых у трона (из меню трона или отказ шагнуть в разлом раненым): экран гаснет с надписью «Отдых у трона»,
+   * в темноте — здоровье и эликсир, сохранение и герой перед троном; когда свет вернётся — искры у трона.
+   */
   private rest(): void {
     audio.play('rest');
-    if (session.hp < session.maxHp) session.hp = session.maxHp;
-    session.save();
+    this.ui.restScreen('Отдых у трона', () => {
+      session.rest();
+      this.placePlayer(THRONE.x, THRONE.y + SPAWN_GAP.throne);
+    });
+    this.time.delayedCall(REST_FX_DELAY, () => this.restFx());
+  }
+
+  private restFx(): void {
     this.fx.burst({ x: THRONE.x, y: THRONE.y - 30, count: 18, speed: [10, 50], angle: [-Math.PI, 0], life: [0.6, 1.2], size: [2, 3], tints: [0xffc24a, 0xffeaa0, 0x9be06a], gravity: -20, depth: DEPTH.fx });
     this.ui.message('Вы отдохнули. Игра сохранена');
   }
@@ -157,7 +173,7 @@ export class BaseScene extends WorldScene {
     const x = DOORS[id], cfg = ROOMS[id];
     this.leaves.set(id, this.prop(session.data.rooms[id] ? 'hall_leaf_open' : 'hall_leaf_locked', x, WALL_Y));
     for (const dx of [-21, 21]) this.colliders.add(x + dx, WALL_Y + 4, 4);
-    new PText(this, x, WALL_Y + 10, cfg.name, { ax: 0.5, ay: 0, color: COLORS.dim }).setDepth(DEPTH.decals + 1);
+    new PText(this, x, WALL_Y + 10, cfg.name, { ax: 0.5, ay: 0, color: COLORS.dim, font: 'world' }).setDepth(DEPTH.decals + 1);
     if (session.data.rooms[id]) this.light(x, WALL_Y - 6, 0xffb060, 1.1, 0.3);
     this.interactables.push({
       x, y: WALL_Y + 12, radius: 24, promptY: 36,
@@ -201,9 +217,9 @@ export class BaseScene extends WorldScene {
     this.tweens.add({ targets: this.riftGlow, alpha: 0.22, duration: 900, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
     this.light(x, y - 22, 0x9a40ff, 3.2, 0.3);
     this.smoke = new AbyssSmoke(this, { x: x - 8, y: y - 16, w: 16, h: 6, driftX: 0, driftY: -48, spread: 18, depth: y + 1, every: 0.12 });
-    new PText(this, x, y + 34, 'Разлом · к аренам', { ax: 0.5, ay: 0, color: COLORS.dim }).setDepth(DEPTH.decals + 1);
+    new PText(this, x, y + 34, 'Разлом · к аренам', { ax: 0.5, ay: 0, color: COLORS.dim, font: 'world' }).setDepth(DEPTH.decals + 1);
     // подойти можно с любой стороны: точка — в самом костре, радиус больше его препятствия
-    this.interactables.push({ x, y, radius: 44, promptY: 74, label: () => 'Шагнуть в разлом · арены', use: () => this.openExpeditionBoard() });
+    this.interactables.push({ x, y, radius: 44, promptY: 74, label: () => 'Шагнуть в разлом · арены', use: () => this.enterRift() });
   }
 
   /** Молния из чёрного пламени: ломаная вверх-вбок, гаснет за доли секунды; разлом вспыхивает. */
@@ -243,25 +259,58 @@ export class BaseScene extends WorldScene {
     this.prop('castle_merchant', MERCHANT.x, MERCHANT.y);
     this.groundShadow(MERCHANT.x, MERCHANT.y, 1.6);
     for (const dx of [-10, 2, 14]) this.colliders.add(MERCHANT.x + dx, MERCHANT.y - 2, 7);
-    new PText(this, MERCHANT.x, MERCHANT.y + 6, 'ТОРГОВЕЦ', { ax: 0.5, color: COLORS.gold }).setDepth(DEPTH.prompt - 1);
+    new PText(this, MERCHANT.x, MERCHANT.y + 6, 'ТОРГОВЕЦ', { ax: 0.5, color: COLORS.gold, font: 'world' }).setDepth(DEPTH.prompt - 1);
     this.interactables.push({ x: MERCHANT.x, y: MERCHANT.y + 4, radius: 30, promptY: 40, label: () => 'Торговец · купить предметы', use: () => this.ui.openShop() });
   }
 
-  /** Сундук у левой стены: заперт, пока не пройдена первая арена; открытый — это снаряжение (инвентарь). */
+  /** Сундук-хранилище у левой стены: сначала покупается доступ, потом расширяется; внутри — перекладывание вещей из карманов. */
   private buildChest(): void {
-    const { x, y } = CHEST;
-    this.prop(session.chestUnlocked ? 'room_chest_open' : 'room_chest_locked', x, y);
+    const { x, y } = CHEST_SPOT;
+    this.chestSprite = this.prop(session.chestUnlocked ? 'room_chest_open' : 'room_chest_locked', x, y);
     this.groundShadow(x, y, 1.3, 0.7);
     for (const dx of [-8, 8]) this.colliders.add(x + dx, y - 2, 8);
-    const unlockName = LOCATIONS.find((l) => l.id === CHEST_UNLOCK)?.name ?? '';
     this.interactables.push({
       x, y: y + 12, radius: 24, promptY: 34,
-      label: () => (session.chestUnlocked ? 'Сундук · снаряжение' : 'Сундук заперт'),
-      use: () => {
-        if (session.chestUnlocked) this.ui.openInventory();
-        else this.ui.message(`Сундук откроется после победы на арене «${unlockName}»`);
-      },
+      label: () => (session.chestUnlocked ? `Сундук · ${session.data.chest.length}/${session.chestCapacity}` : `Сундук · открыть за ${CHEST.price}`),
+      use: () => this.openChestMenu(),
     });
+  }
+
+  private openChestMenu(): void {
+    const price = session.chestNextPrice, lv = session.data.chestLevel;
+    if (!session.chestUnlocked) {
+      this.ui.openChoice({
+        title: 'Сундук', width: 300,
+        lines: ['Хранилище для любых вещей: сюда перекладывают их из карманов.', `Кошелёк: ${session.data.coins} монет`],
+        options: [
+          { label: `Купить сундук · ${CHEST.perLevel} мест`, cost: CHEST.price, enabled: session.canAfford(CHEST.price), onChoose: () => { this.upgradeChest(); } },
+          { label: 'Не сейчас', onChoose: () => undefined },
+        ],
+      });
+      return;
+    }
+    this.ui.openChoice({
+      title: `Сундук · ур. ${lv}`, width: 300,
+      lines: [`Занято: ${session.data.chest.length}/${session.chestCapacity} · карманы: ${session.pocketItems.length}`, `Кошелёк: ${session.data.coins} монет`],
+      options: [
+        { label: 'Открыть сундук', onChoose: () => this.ui.openChest() },
+        price === null
+          ? { label: `Вместимость ${session.chestCapacity} (макс.)`, enabled: false, onChoose: () => undefined }
+          : { label: `Расширить до ${session.chestCapacity + CHEST.perLevel} мест`, cost: price, enabled: session.canAfford(price), onChoose: () => { this.upgradeChest(); } },
+        { label: 'Закрыть', onChoose: () => undefined },
+      ],
+    });
+  }
+
+  private upgradeChest(): void {
+    const first = !session.chestUnlocked;
+    if (!session.upgradeChest()) return;
+    audio.play('build');
+    this.chestSprite?.setTexture('room_chest_open');
+    const { x, y } = CHEST_SPOT;
+    this.fx.burst({ x, y: y - 14, count: 20, speed: [30, 90], life: [0.5, 1], size: [2, 3], tints: [0xf2d060, 0xfff0a0, 0xc58f58], gravity: 80, depth: DEPTH.fx });
+    this.ui.banner(first ? 'Сундук открыт' : `Сундук: ${session.chestCapacity} мест`, COLORS.blade, 2);
+    this.openChestMenu();
   }
 
   private buildPet(): void {
@@ -271,44 +320,75 @@ export class BaseScene extends WorldScene {
   }
 
   // ---------------- вылазка ----------------
-  private openExpeditionBoard(): void {
-    const options: ChoiceOption[] = LOCATIONS.map((loc) => {
+  /**
+   * Разлом — как лавка: вкладки «Сюжет» и «Рейтинг» сверху (при открытии — «Сюжет»), под ними — что выбрать;
+   * внизу красная кнопка «Остаться в замке».
+   */
+  private openExpeditionBoard(tab = 0): void {
+    const story = this.storyOptions(), rating = this.ratingOptions();
+    this.ui.openChoice({
+      title: 'Разлом Бездны', width: 360,
+      tabs: { labels: RIFT_TABS, active: tab, onSelect: (i) => this.openExpeditionBoard(i) },
+      lines: tab === 0
+        ? [`Урон: ${session.damage} · здоровье: ${session.hp}/${session.maxHp} · эликсиров: ${session.data.poultice}/${SETTINGS.base.poulticeMax}`]
+        : [session.data.ratingBest ? `Рекорд: ${formatTime(session.data.ratingBest)}` : 'Рекорда пока нет.'],
+      options: tab === 0 ? story : rating,
+      sizeLike: story.length >= rating.length ? story : rating,
+      closeButton: 'Остаться в замке',
+    });
+  }
+
+  /** «Сюжет»: арены по очереди — следующая открывается после победы над боссом предыдущей. */
+  private storyOptions(): ChoiceOption[] {
+    return LOCATIONS.map((loc) => {
       const unlocked = session.isUnlocked(loc.id);
       return {
         label: `${loc.level}. ${loc.name}${session.data.cleared.includes(loc.id) ? ' · пройдено' : unlocked ? '' : ' · закрыто'}`,
         desc: unlocked ? `${loc.description} Награда: ${loc.reward} монет.` : 'Победите всех врагов и босса предыдущей арены.',
         enabled: unlocked,
-        onChoose: () => { this.startExpedition(loc.id); },
+        onChoose: () => { this.startExpedition({ location: loc.id }); },
       };
-    });
-    options.push({ label: 'Остаться в замке', onChoose: () => undefined });
-    this.ui.openChoice({
-      title: 'Испытания ордена',
-      lines: [`Оружие: ${WEAPON_NAMES[session.weaponLevel]} · урон ${session.damage}`, `Монет за врага: +${session.killBonus} · эликсиров: ${session.data.poultice}`],
-      options, width: 330,
     });
   }
 
-  private startExpedition(location: LocationId): void {
+  /** «Рейтинг»: бой на время в центре арены; открыт после первой пройденной арены. */
+  private ratingOptions(): ChoiceOption[] {
+    const open = session.ratingMobs.length > 0;
+    return [{
+      label: open ? 'Начать бой на время' : 'Бой на время · закрыто', enabled: open,
+      desc: open ? 'Вы в центре арены, волны без конца — враги из пройденных арен сюжета.' : 'Откроется, когда пройдёте первую арену сюжета.',
+      onChoose: () => { this.startExpedition({ mode: 'rating' }); },
+    }];
+  }
+
+  /** Раненым в разлом — сначала вопрос: «Нет» отправляет отдохнуть у трона. */
+  private enterRift(): void {
+    if (session.hp >= session.maxHp) { this.openExpeditionBoard(); return; }
+    this.ui.openChoice({
+      title: 'Разлом Бездны', width: 300,
+      lines: [`У вас не полное здоровье (${session.hp}/${session.maxHp}).`, 'Вы уверены, что хотите продолжить?'],
+      options: [
+        { label: 'Да', desc: 'Шагнуть к аренам как есть.', onChoose: () => { this.openExpeditionBoard(); return true; } },
+        { label: 'Нет', desc: 'Вы отдохнёте у трона: здоровье и эликсир восполнятся.', onChoose: () => { this.rest(); } },
+      ],
+    });
+  }
+
+  private startExpedition(data: { location?: LocationId; mode?: ExpeditionMode }): void {
     session.clearRun();
     audio.play('portal');
-    this.goTo(SCENES.expedition, { location });
+    this.goTo(SCENES.expedition, data);
   }
 
   private showReport(r: Report): void {
     const lines: string[] = [];
+    if (r.rating) lines.push(`Вы продержались: ${formatTime(r.rating.time)}.`, r.rating.record ? 'Новый рекорд!' : `Рекорд: ${formatTime(session.data.ratingBest)}.`);
     lines.push(`Побеждено врагов: ${r.kills}.`);
-    lines.push(`Заработано монет: ${r.coins}. Они уже в кошельке.`);
+    lines.push(r.coins > 0 ? `Заработано монет: ${r.coins}. Они уже в кошельке.` : 'Увы, но вы ничего не заработали.');
     if (r.cleared) lines.push('Арена пройдена! Прогресс сохранён.');
     if (r.king) lines.push('Король Бездны повержен!');
-    if (session.data.buildings.garden > 0 && session.data.gardenStage >= 3) lines.push('Травы у ведьмы готовы.');
     this.ui.openChoice({ title: r.died ? 'Вас принесли в замок' : 'Возвращение в зал', lines, options: [{ label: 'Хорошо', onChoose: () => undefined }], closable: true, width: 310 });
     session.lastReport = null;
-  }
-
-  private refreshObjective(): void {
-    const cleared = session.data.cleared.length;
-    this.ui.setObjective(cleared === LOCATIONS.length ? 'Все арены пройдены · I — инвентарь' : `Арены: ${cleared}/${LOCATIONS.length} · чёрный костёр в центре`);
   }
 
   goMenu(): void {
@@ -329,8 +409,6 @@ export class BaseScene extends WorldScene {
     this.updatePet(dt);
     this.markT -= dt;
     if (this.markT <= 0) { this.markT = 0.6; this.updateMarks(); }
-    this.objT -= dt;
-    if (this.objT <= 0) { this.objT = 2; this.refreshObjective(); }
     if (this.player.potionPressed()) this.ui.message('Эликсиры пригодятся на арене');
   }
 
@@ -372,7 +450,7 @@ export class BaseScene extends WorldScene {
     for (const m of this.marks) {
       const ready = m.ready();
       if (ready && !m.text) {
-        m.text = new PText(this, m.x, m.y, '!', { font: 'big', ax: 0.5, ay: 1, color: COLORS.gold }).setDepth(DEPTH.fx);
+        m.text = new PText(this, m.x, m.y, '!', { font: 'worldBig', ax: 0.5, ay: 1, color: COLORS.gold }).setDepth(DEPTH.fx);
         this.tweens.add({ targets: m.text, y: m.y - 4, duration: 420, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
       } else if (!ready && m.text) {
         this.tweens.killTweensOf(m.text);

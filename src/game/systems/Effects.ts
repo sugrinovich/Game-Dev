@@ -72,7 +72,7 @@ export class Effects {
   poof(x: number, y: number, scale = 1): void { this.anim(x, y - 4, 'poof', scale); }
 
   floatText(x: number, y: number, text: string, color: number = COLORS.text, big = false): void {
-    const t = new PText(this.scene, x, y, text, { ax: 0.5, ay: 1, color, font: big ? 'big' : 'ui' }).setDepth(DEPTH.fx + 5);
+    const t = new PText(this.scene, x, y, text, { ax: 0.5, ay: 1, color, font: big ? 'worldBig' : 'world' }).setDepth(DEPTH.fx + 5);
     this.scene.tweens.add({ targets: t, y: y - 16, duration: 650, ease: 'Cubic.easeOut' });
     this.scene.tweens.add({ targets: t, alpha: 0, delay: 380, duration: 270, onComplete: () => t.destroy() });
   }

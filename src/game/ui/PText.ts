@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { TEXTURES } from '../configs/assets';
 import { COLORS, GAME } from '../configs/game';
-import { FONTS, type FontKey } from './PixelFont';
+import { FONT_INK, FONTS, type FontKey } from './PixelFont';
 
 export interface PTextOptions {
   /** ui — обычный текст, big — плоские надписи, title — объёмное название игры. */
@@ -68,6 +68,9 @@ export class PText extends Phaser.GameObjects.Container {
   }
 
   setColor(color: number): this { this.main.setTint(color); return this; }
+
+  /** y для надписи, чтобы её буквы встали ровно посередине по высоте вокруг centerY (кнопки, ленты, строки меню). */
+  static centerY(centerY: number, font: FontKey = 'ui'): number { return Math.round(centerY - FONT_INK[font].center); }
 
   get textWidth(): number { return this.main.width; }
   get textHeight(): number { return this.main.height; }

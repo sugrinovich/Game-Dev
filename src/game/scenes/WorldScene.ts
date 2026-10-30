@@ -9,6 +9,7 @@ import { textureResolution } from '../systems/CastleModels';
 import { Effects } from '../systems/Effects';
 import { audio } from '../systems/Sfx';
 import type { MapBounds } from '../systems/MapBounds';
+import { FONT_INK } from '../ui/PixelFont';
 import { PText } from '../ui/PText';
 import { drawPlate, UI } from '../ui/Panel';
 import type { Arena, Point } from '../types';
@@ -19,6 +20,8 @@ import type { UIScene } from './UIScene';
  * а сглаженная точка движется ровно — карта прокручивается без дрожи, в том числе по диагонали.
  */
 const CAMERA_SMOOTH = 10;
+/** Поле под подсказкой «[E] …»: строк над и под буквами внутри плашки. */
+const PROMPT_PAD = 3;
 /** Скорость плавного появления и исчезновения подсказки «[E]» (доля в секунду). */
 const PROMPT_FADE_SPEED = 12;
 
@@ -75,11 +78,7 @@ export abstract class WorldScene extends Phaser.Scene implements Arena {
     this.ui = this.scene.get(SCENES.ui) as UIScene;
     this.whenUi(() => this.ui.bind(this, mode));
 
-    this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
-      if (this.blocked() || !p.leftButtonDown()) return;
-      this.player.attackToward(p.worldX, p.worldY);
-    });
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => { this.input.off('pointerdown'); this.fx.clear(); });
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.fx.clear());
   }
 
   /** Интерфейс запускается параллельно и готов не сразу: всё, что его трогает, делаем через этот метод. */
@@ -95,6 +94,13 @@ export abstract class WorldScene extends Phaser.Scene implements Arena {
     this.cameras.main.startFollow(this.cameraTarget, true, 1, 1);
     this.cameras.main.centerOn(x, y);
     return this.player;
+  }
+
+  /** Перенести героя (в темноте экрана): камера сразу на нём, без плавного догоняния. */
+  protected placePlayer(x: number, y: number): void {
+    this.player.teleport(x, y);
+    this.cameraTarget.x = x; this.cameraTarget.y = y;
+    this.cameras.main.centerOn(x, y);
   }
 
   /** Объект, поставленный «ногами» в точку (x, y); глубина — по Y. Анимированные объекты замка сразу оживают. */
@@ -193,8 +199,10 @@ export abstract class WorldScene extends Phaser.Scene implements Arena {
   /** Плашка под подсказкой «[E] …» — гаснет вместе с текстом. */
   private drawPromptPlate(): void {
     if (!this.prompt.visible) return;
-    const pw = this.prompt.textWidth + 10, ph = this.prompt.textHeight + 3;
-    drawPlate(this.holdGfx, Math.round(this.prompt.x - pw / 2), Math.round(this.prompt.y - ph), pw, ph, 0.8 * this.promptAlpha);
+    // плашка по самим буквам: рамка, по PROMPT_PAD строк сверху и снизу (надпись привязана низом строки шрифта)
+    const ink = FONT_INK.ui, lineTop = this.prompt.y - this.prompt.textHeight;
+    const top = Math.round(lineTop + ink.top - PROMPT_PAD - 1), ph = ink.bottom - ink.top + (PROMPT_PAD + 1) * 2, pw = this.prompt.textWidth + 10;
+    drawPlate(this.holdGfx, Math.round(this.prompt.x - pw / 2), top, pw, ph, 0.8 * this.promptAlpha);
   }
 
   // ---------------- Arena ----------------

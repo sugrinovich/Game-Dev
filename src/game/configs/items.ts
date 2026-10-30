@@ -1,142 +1,117 @@
-/** Улучшения, комнаты замка, магазин и локации. Новое улучшение/комната/локация = новая запись здесь. Единственная валюта — монеты. */
+/** Комнаты замка, сундук, магазин и локации. Новая комната/локация = новая запись здесь. Единственная валюта — монеты. */
 import type { GearId } from '../systems/HeroArt';
-
-/**
- * Улучшения по уровням (ключи — как в старых сохранениях): оружие куёт гном в кузне, здоровье и награду за врагов
- * даёт трон павшего короля, травы для эликсиров растит ведьма в целебнице.
- */
-export const BUILDING_IDS = ['workshop', 'hut', 'storage', 'garden'] as const;
-export type BuildingId = (typeof BUILDING_IDS)[number];
-
-export interface BuildingConfig {
-  name: string;
-  /** Цена в монетах за улучшение до уровня 1, 2, 3. */
-  prices: [number, number, number];
-  /** Что даёт каждый уровень (строки показываются в окне постройки). */
-  effects: [string, string, string];
-  description: string;
-}
-
-export const BUILDINGS: Record<BuildingId, BuildingConfig> = {
-  workshop: {
-    name: 'Перековка оружия',
-    description: 'Гном-кузнец перековывает оружие у лавовой печи.',
-    prices: [40, 80, 140],
-    effects: ['Стальной меч: урон +1.', 'Меч ордена: урон +1, удары чаще.', 'Королевский клинок: урон +1, мощный нокбэк.'],
-  },
-  hut: {
-    name: 'Стойкость',
-    description: 'Клятва у трона: больше здоровья.',
-    prices: [35, 70, 120],
-    effects: ['Макс. здоровье +20.', 'Макс. здоровье +20 ещё раз.', 'Макс. здоровье +20 ещё раз.'],
-  },
-  storage: {
-    name: 'Казна ордена',
-    description: 'Каждый уровень увеличивает награду за врагов.',
-    prices: [30, 60, 100],
-    effects: ['+2 монеты за врага.', 'Ещё +2 монеты за врага.', 'Ещё +2 монеты за врага.'],
-  },
-  garden: {
-    name: 'Травы ведьмы',
-    description: 'Травы растут после каждой вылазки. Урожай — эликсиры.',
-    prices: [25, 50, 90],
-    effects: ['Урожай: 1 эликсир.', 'Урожай: 2 эликсира.', 'Урожай: 3 эликсира.'],
-  },
-};
+import type { EnemyTypeId } from './characters';
 
 /** Комнаты тронного зала: кузня и целебница, открываются за плату (один раз). */
 export const ROOM_IDS = ['smithy', 'apothecary'] as const;
 export type RoomId = (typeof ROOM_IDS)[number];
 export interface RoomConfig { name: string; /** Сколько монет стоит открыть (0 — открыто сразу). */ price: number; description: string }
 export const ROOMS: Record<RoomId, RoomConfig> = {
-  smithy: { name: 'Кузня', price: 50, description: 'Гном-кузнец перековывает оружие у лавовой печи.' },
-  apothecary: { name: 'Целебница', price: 100, description: 'Ведьма варит эликсиры и растит травы.' },
+  smithy: { name: 'Кузня', price: 50, description: 'Гном-кузнец работает у лавовой печи.' },
+  apothecary: { name: 'Целебница', price: 100, description: 'Комната ведьмы, полная трав и зелий.' },
 };
-/** Сундук в тронном зале заперт, пока не пройдена эта арена; открытый сундук — это инвентарь (I). */
-export const CHEST_UNLOCK: LocationId = 'courtyard';
+/**
+ * Сундук-хранилище в тронном зале: сюда перекладывают вещи из карманов. Доступ покупается (price), потом вместимость
+ * растёт по уровням: perLevel мест за уровень, до maxLevel; upgrades — цены уровней 2, 3, 4, 5.
+ */
+export const CHEST = { price: 40, upgrades: [30, 50, 80, 120], perLevel: 8, maxLevel: 5 } as const;
 
-export const WEAPON_NAMES = ['Палка', 'Стальной меч', 'Меч ордена', 'Королевский клинок'] as const;
-/** Цена эликсира у ведьмы (дешевле, чем у торговца). */
-export const POULTICE_PRICE = 8;
-/** Сколько эликсиров даёт урожай трав ведьмы на уровне 1, 2, 3. */
-export const GARDEN_YIELD: Record<number, number> = { 1: 1, 2: 2, 3: 3 };
-
-export const EQUIPMENT_IDS = ['sword', 'rune', 'satchel', 'helmet', 'armor', 'greaves', 'gloves'] as const;
+export const EQUIPMENT_IDS = ['sword', 'helmet', 'armor', 'greaves', 'gloves', 'oldBag'] as const;
 export type EquipmentId = (typeof EQUIPMENT_IDS)[number];
-export type ShopItemId = EquipmentId | 'potion';
+/** Всё, что продаёт торговец (эликсиры не продаются: один восполняется отдыхом у костра). */
+export type ShopItemId = EquipmentId;
 
 /** Слоты доспехов на персонаже — в инвентаре слева от героя. */
 export const ARMOR_SLOTS = ['head', 'chest', 'legs', 'hands'] as const;
 export type ArmorSlot = (typeof ARMOR_SLOTS)[number];
 export const ARMOR_SLOT_NAMES: Record<ArmorSlot, string> = { head: 'Шлем', chest: 'Нагрудник', legs: 'Штаны', hands: 'Перчатки' };
-/** Что предмет улучшает: урон, здоровье, монеты за врага или скорость ударов (секунд между ударами меньше). */
-export type ItemStat = 'damage' | 'maxHp' | 'killBonus' | 'attackSpeed';
-export type ItemKind = 'weapon' | 'magic' | 'buff' | 'armor';
-export const ITEM_KIND_NAMES: Record<ItemKind, string> = { weapon: 'Оружие', magic: 'Магия', buff: 'Усиление', armor: 'Доспех' };
+/** Что предмет улучшает: урон или здоровье. */
+export type ItemStat = 'damage' | 'maxHp';
+export type ItemKind = 'weapon' | 'magic' | 'buff' | 'armor' | 'pack';
+export const ITEM_KIND_NAMES: Record<ItemKind, string> = { weapon: 'Оружие', magic: 'Магия', buff: 'Усиление', armor: 'Доспех', pack: 'Сумка' };
+/** Отделы лавки торговца (вкладки после «Все»): какие виды предметов в каждом. В пустом — «Товара пока нет». */
+export const SHOP_DEPARTMENTS: readonly { name: string; kinds: readonly ItemKind[] }[] = [
+  { name: 'Оружие', kinds: ['weapon'] },
+  { name: 'Броня', kinds: ['armor', 'pack'] },
+  { name: 'Магия', kinds: ['magic'] },
+  { name: 'Бафы', kinds: ['buff'] },
+];
 /**
- * Рюкзак — сетка клеток. Оружие, магия и усиления действуют, только пока лежат в рюкзаке;
- * то, что не поместилось, ждёт в сундуке. Предметы можно поворачивать.
+ * Сумка — сетка клеток. Оружие, магия и усиления действуют, только пока лежат в сумке;
+ * то, что не поместилось, носится в карманах. Предметы можно поворачивать.
+ * BAG_START — сумка без покупной (в слоте сумки пусто); BAG — самая большая, под неё размечено окно инвентаря.
  */
+export const BAG_START = { cols: 1, rows: 3 } as const;
 export const BAG = { cols: 5, rows: 4 } as const;
+export interface BagSize { cols: number; rows: number }
+/** Карманы героя: столько вещей носится с собой, не действуя (сюда же попадают покупки и снятые доспехи). */
+export const POCKETS = 8;
+
+/**
+ * Классы (редкость) предметов — от обычного к легендарному: название, фон клетки, кант и цвет подписи.
+ * Пока все предметы обычные; остальные классы — на будущее. Палка в руке без оружия — кулаки, у неё класса нет.
+ */
+export const RARITIES = {
+  common: { name: 'Обычный', fill: 0x3a3e48, edge: 0x9aa0ac, text: 0xc4cad4 },
+  rare: { name: 'Редкий', fill: 0x223e2a, edge: 0x6ac070, text: 0x8ae090 },
+  enchanted: { name: 'Зачарованный', fill: 0x203654, edge: 0x5aa0e0, text: 0x80c0ff },
+  epic: { name: 'Эпический', fill: 0x382250, edge: 0xb070e0, text: 0xd0a0ff },
+  legendary: { name: 'Легендарный', fill: 0x4a3216, edge: 0xf0a040, text: 0xffc060 },
+} as const;
+export type Rarity = keyof typeof RARITIES;
 
 export interface ShopItem { name: string; icon: string; price: number; description: string }
 export interface EquipmentItem extends ShopItem {
   kind: ItemKind;
-  /** Доспех надевается в слот на персонаже, остальное кладётся в рюкзак: форма — строки, '#' — занятая клетка. */
+  /** Класс предмета: цвет фона в инвентаре и лавке, подпись в описании. */
+  rarity: Rarity;
+  /** Доспех надевается в слот на персонаже, остальное кладётся в сумку: форма — строки, '#' — занятая клетка. */
   slot?: ArmorSlot;
   shape?: readonly string[];
-  stat: ItemStat;
-  bonus: number;
+  /** Сумка: надевается в слот сумки, и сетка становится такого размера. */
+  bagSize?: BagSize;
+  stat?: ItemStat;
+  bonus?: number;
   /** Какая вещь появляется на герое, когда предмет надет: id из GEAR в systems/HeroArt.ts. */
   wear?: GearId;
 }
 
 export const EQUIPMENT: Record<EquipmentId, EquipmentItem> = {
-  sword: { name: 'Меч стража', kind: 'weapon', shape: ['#', '#', '#'], icon: 'castle_sword', wear: 'sword', price: 30, stat: 'damage', bonus: 2, description: 'Урон +2.' },
-  rune: { name: 'Руна ярости', kind: 'magic', shape: ['#.', '##', '#.'], icon: 'item_rune', price: 35, stat: 'attackSpeed', bonus: 0.06, description: 'Удары чаще: на 0,06 с между ударами меньше.' },
-  satchel: { name: 'Кошель охотника', kind: 'buff', shape: ['##', '##'], icon: 'castle_satchel', wear: 'purse', price: 25, stat: 'killBonus', bonus: 3, description: 'Монеты за каждого врага +3.' },
-  helmet: { name: 'Шлем стража', kind: 'armor', slot: 'head', icon: 'item_helmet', wear: 'helm', price: 20, stat: 'maxHp', bonus: 10, description: 'Максимальное здоровье +10.' },
-  armor: { name: 'Кольчуга', kind: 'armor', slot: 'chest', icon: 'castle_armor', wear: 'chainmail', price: 45, stat: 'maxHp', bonus: 20, description: 'Максимальное здоровье +20. Отдохните у жаровни после экипировки.' },
-  greaves: { name: 'Поножи', kind: 'armor', slot: 'legs', icon: 'item_greaves', wear: 'greaves', price: 20, stat: 'maxHp', bonus: 10, description: 'Максимальное здоровье +10.' },
-  gloves: { name: 'Латные перчатки', kind: 'armor', slot: 'hands', icon: 'item_gloves', wear: 'gloves', price: 25, stat: 'damage', bonus: 1, description: 'Урон +1.' },
+  sword: { name: 'Старый меч', kind: 'weapon', rarity: 'common', shape: ['#', '#', '#'], icon: 'castle_sword', wear: 'sword', price: 30, stat: 'damage', bonus: 2, description: 'Урон +2.' },
+  helmet: { name: 'Старый шлем', kind: 'armor', rarity: 'common', slot: 'head', icon: 'item_helmet', wear: 'helm', price: 20, stat: 'maxHp', bonus: 10, description: 'Максимальное здоровье +10.' },
+  armor: { name: 'Старая кольчуга', kind: 'armor', rarity: 'common', slot: 'chest', icon: 'castle_armor', wear: 'chainmail', price: 45, stat: 'maxHp', bonus: 20, description: 'Максимальное здоровье +20.' },
+  greaves: { name: 'Старые поножи', kind: 'armor', rarity: 'common', slot: 'legs', icon: 'item_greaves', wear: 'greaves', price: 20, stat: 'maxHp', bonus: 10, description: 'Максимальное здоровье +10.' },
+  gloves: { name: 'Старые перчатки', kind: 'armor', rarity: 'common', slot: 'hands', icon: 'item_gloves', wear: 'gloves', price: 25, stat: 'damage', bonus: 1, description: 'Урон +1.' },
+  oldBag: { name: 'Старая сумка', kind: 'pack', rarity: 'common', icon: 'castle_satchel', price: 35, bagSize: { cols: 2, rows: 3 }, description: 'Наденьте в слот сумки: сумка станет 2×3.' },
 };
 
-export const SHOP_ITEMS: Record<ShopItemId, ShopItem> = {
-  ...EQUIPMENT,
-  potion: { name: 'Эликсир здоровья', icon: 'castle_potion', price: 12, description: 'Восстанавливает 35 здоровья. Использовать: Q на арене.' },
-};
-export const ECONOMY = { startingCoins: 30, mobCoins: 6, bossCoins: 30, coinsPerTreasury: 2 } as const;
+export const SHOP_ITEMS: Record<ShopItemId, ShopItem> = EQUIPMENT;
+export const ECONOMY = { startingCoins: 30, mobCoins: 6, bossCoins: 30 } as const;
 
 export type LocationId = 'courtyard' | 'crypt' | 'forge';
-/** Ворота между комнатами арены: в какой стене (top — задняя, bottom — нижняя) и где — доля ширины стены (0..1). */
-export type PassageSide = 'top' | 'bottom';
-export interface PassageConfig { side: PassageSide; at: number }
 /**
- * Комната арены: волны (сколько врагов в каждой) и ворота в задней стене в следующую комнату (at — где по ширине,
- * у каждой комнаты своё место) — шипы уходят в пол после последней волны. У последней комнаты ворот нет:
- * там после волн приходит Король Бездны.
+ * Арена сюжета — площадка в четырёх стенах: волны врагов (сколько в каждой), после последней — босс. У каждой арены
+ * свой будущий босс (по нему и название); пока все три идут на общей старой арене с Королём Бездны.
+ * mobs — какие враги приходят на этой арене: из пройденных арен собирается орда режима «Рейтинг».
  */
-export interface ArenaRoomConfig { waves: number[]; exit?: PassageConfig & { side: 'top' } }
 export interface LocationConfig {
   id: LocationId; name: string; level: number; stars: number; description: string;
   theme: 'courtyard' | 'crypt' | 'forge';
-  rooms: ArenaRoomConfig[]; hpMultiplier: number; reward: number;
+  waves: number[]; hpMultiplier: number; reward: number;
+  mobs: readonly EnemyTypeId[];
 }
 export const LOCATIONS: LocationConfig[] = [
-  { id: 'courtyard', name: 'Турнирный двор', level: 1, stars: 1, theme: 'courtyard',
-    description: 'Три комнаты: нежить и орки, в последней — Король Бездны.', hpMultiplier: 1, reward: 25,
-    rooms: [{ waves: [3], exit: { side: 'top', at: 0.3 } }, { waves: [2, 3], exit: { side: 'top', at: 0.7 } }, { waves: [] }] },
-  { id: 'crypt', name: 'Забытый склеп', level: 2, stars: 2, theme: 'crypt',
-    description: 'Четыре комнаты древнего склепа. Приходят огры, враги выносливее.', hpMultiplier: 1.3, reward: 40,
-    rooms: [{ waves: [4], exit: { side: 'top', at: 0.7 } }, { waves: [2, 3], exit: { side: 'top', at: 0.3 } }, { waves: [5], exit: { side: 'top', at: 0.5 } }, { waves: [] }] },
-  { id: 'forge', name: 'Багровая кузня', level: 3, stars: 3, theme: 'forge',
-    description: 'Последнее испытание: четыре комнаты и разъярённый Король Бездны.', hpMultiplier: 1.6, reward: 60,
-    rooms: [{ waves: [5], exit: { side: 'top', at: 0.35 } }, { waves: [3, 3], exit: { side: 'top', at: 0.7 } }, { waves: [6], exit: { side: 'top', at: 0.3 } }, { waves: [] }] },
+  { id: 'courtyard', name: 'Арена Короля Бездны', level: 1, stars: 1, theme: 'courtyard', mobs: ['skeleton', 'archer', 'orc'],
+    description: 'Три волны нежити и орков, в конце — Король Бездны.', hpMultiplier: 1, reward: 25, waves: [3, 4, 5] },
+  { id: 'crypt', name: 'Арена Арахнидового монстра', level: 2, stars: 2, theme: 'crypt', mobs: ['skeleton', 'archer', 'orc', 'ogre'],
+    description: 'Четыре волны, приходят огры. Своя арена и босс — скоро, пока бой на старой арене.', hpMultiplier: 1.3, reward: 40, waves: [4, 5, 5, 6] },
+  { id: 'forge', name: 'Арена Магмового правителя', level: 3, stars: 3, theme: 'forge', mobs: ['skeleton', 'archer', 'orc', 'ogre'],
+    description: 'Пять волн и разъярённый босс. Своя арена — скоро, пока бой на старой арене.', hpMultiplier: 1.6, reward: 60, waves: [5, 5, 6, 6, 7] },
 ];
 
-const OPPOSITE: Record<PassageSide, PassageSide> = { top: 'bottom', bottom: 'top' };
-/** Откуда герой входит в комнату: в первую — через ворота снизу, в следующие — с противоположной стороны прохода. */
-export function roomEntry(loc: LocationConfig, room: number): PassageConfig {
-  const prev = loc.rooms[room - 1]?.exit;
-  return prev ? { side: OPPOSITE[prev.side], at: prev.at } : { side: 'bottom', at: 0.5 };
-}
+/**
+ * «Рейтинг» — бой на время: герой в точке посередине арены, волны без конца. Арена (тема) рейтинга; первая волна
+ * и прирост врагов с каждой волной; через сколько секунд приходит следующая, даже если прежняя не добита;
+ * на сколько крепче враги с каждой волной.
+ */
+export const RATING = { location: 'courtyard' as LocationId, firstWave: 3, perWave: 1, every: 14, hpPerWave: 0.08 } as const;

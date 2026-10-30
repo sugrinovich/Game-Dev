@@ -8,7 +8,8 @@ export const SETTINGS = {
     baseDamage: 2, attackCooldown: 0.42, attackRange: 26, attackHalfArc: 1.15, hitStopMs: 45,
     iFrames: 0.9, dashSpeed: 210, dashTime: 0.17, dashCooldown: 1.2, knockback: 140,
   },
-  base: { baseHp: 60, hpPerHut: 20, poulticeHeal: 35, poulticeMax: 5 },
+  /** poulticeMax — сколько эликсиров восполняет отдых у костра (купить их нельзя). */
+  base: { baseHp: 60, poulticeHeal: 35, poulticeMax: 1 },
   expedition: { returnHoldSeconds: 1.3 },
   /** Крупные объекты зала (торговец, постройки, жаровни) уменьшаются до этой высоты — примерно рост героя. */
   props: { maxHeight: 32 },
