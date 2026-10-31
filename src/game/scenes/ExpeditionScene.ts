@@ -150,9 +150,10 @@ export class ExpeditionScene extends WorldScene {
     }
   }
 
-  /** Разлом Бездны внизу арены (нарисован в полу): лиловое сияние и чёрный дым; удерживая E — назад в замок. */
+  /** Разлом Бездны внизу арены (3D-кольцо плит вровень с полом): лиловое сияние и чёрный дым; удерживая E — назад в замок. */
   private placeRift(): void {
-    const { x, y } = RIFT;
+    const { x, y } = RIFT, E = ARENA_RIFTS.exit;
+    this.add.image(x, y, E.key).setOrigin(E.anchor.x / E.w, E.anchor.y / E.h).setScale(1 / textureResolution(this.textures.get(E.key))).setDepth(DEPTH.decals + 1);
     const glow = this.add.image(x, y, TEXTURES.glow).setTint(0x7a2ac0).setBlendMode(Phaser.BlendModes.ADD).setScale(3, 1.4).setAlpha(0.35).setDepth(DEPTH.decals + 2);
     this.tweens.add({ targets: glow, alpha: 0.18, duration: 900, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
     this.smoke = new AbyssSmoke(this, { x: x - 6, y: y - 4, w: 12, h: 4, driftX: 0, driftY: -30, spread: 12, depth: y + 1, every: 0.2 });

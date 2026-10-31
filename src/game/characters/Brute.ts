@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { textureResolution } from '../systems/CastleModels';
 import { ENEMY_TYPES, type EnemyConfig } from '../configs/characters';
 import { SETTINGS } from '../configs/settings';
 import { SLASH_ORIGIN } from '../systems/MobArt';
@@ -74,7 +75,8 @@ abstract class Brute extends Mob {
     }
     this.arena.playSfx('swing');
     const fx = this.scene.add.sprite(this.x + ux * 4, this.y - 10 + uy * 4, 'slash', '0')
-      .setOrigin(SLASH_ORIGIN.x, SLASH_ORIGIN.y).setRotation(Math.atan2(uy, ux)).setDepth(this.y + 30).setTint(0xffc8a0).setScale(0.85);
+      .setOrigin(SLASH_ORIGIN.x, SLASH_ORIGIN.y).setRotation(Math.atan2(uy, ux)).setDepth(this.y + 30).setTint(0xffc8a0);
+    fx.setScale(0.85 / textureResolution(fx.texture));
     fx.play('slash');
     fx.once(Phaser.Animations.Events.ANIMATION_COMPLETE, () => fx.destroy());
     if (Math.hypot(target.x - this.x, target.y - this.y) <= this.attack.reach + SETTINGS.player.radius) this.arena.hurtPlayer(this.config.damage, this.x, this.y);

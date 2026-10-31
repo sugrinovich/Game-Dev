@@ -2,6 +2,8 @@
 
 export const TEXTURES = {
   px: 'px',
+  /** Мягкая круглая точка (HD): частицы — искры, дым, пыль. */
+  dot: 'fx_dot',
   glow: 'glow',
   shadow: 'shadow',
 } as const;

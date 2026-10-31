@@ -6,7 +6,7 @@ import { AbyssSmoke } from '../systems/AbyssSmoke';
 import { audio } from '../systems/Sfx';
 import { PText } from '../ui/PText';
 import { addCastleAmbience, addCastleFront, addCastleGround, HALL_DOOR_X, HALL_FIRE, HALL_GROUND_KEY, HALL_SIZE, paintCastleGround, ROOM_BOUNDS, WALL_BANNER } from '../systems/CastleArt';
-import { textureResolution } from '../systems/CastleModels';
+import { CAT_DIAGONAL, CAT_FRAME, textureResolution } from '../systems/CastleModels';
 import { MapBounds } from '../systems/MapBounds';
 import { session, type Report } from '../state/Session';
 import { WorldScene } from './WorldScene';
@@ -38,7 +38,12 @@ const RIFT_TABS = ['Арены', 'Рейтинг'] as const;
 /** Искры у трона после отдыха — когда экран уже светлеет (мс от начала отдыха). */
 const REST_FX_DELAY = 3900;
 /** Котик в зале: бегает к случайным точкам пола, иногда садится отдохнуть. Скорость — пиксели в секунду. */
-const CAT = { speed: 70, radius: 4, sitChance: 0.35, area: { x0: 60, x1: 580, y0: 140, y1: 420 } } as const;
+const CAT = { speed: 70, radius: 4, sitChance: 0.35, area: { x0: 60, x1: 580, y0: 140, y1: 420 }, diagonal: 0.45 } as const;
+/** Лист бега котика: вбок или по диагонали (вверх или вниз), если по вертикали он бежит заметно (diagonal — доля от горизонтали). */
+function catRunKey(dx: number, dy: number): string {
+  if (Math.abs(dy) < Math.abs(dx) * CAT.diagonal) return 'cat_run';
+  return dy > 0 ? CAT_DIAGONAL.down.key : CAT_DIAGONAL.up.key;
+}
 
 /** Золотой «!» над тем, что уже можно открыть или улучшить. */
 interface ReadyMark { x: number; y: number; ready: () => boolean; text: PText | null }
@@ -313,7 +318,7 @@ export class BaseScene extends WorldScene {
 
   private buildPet(): void {
     this.petShadow = this.add.image(380, 300, TEXTURES.shadow).setScale(0.6, 0.5);
-    this.pet = this.add.sprite(380, 300, 'cat_sit', '0').setOrigin(0.5, 15 / 16).play('cat_sit');
+    this.pet = this.add.sprite(380, 300, 'cat_sit', '0').setOrigin(CAT_FRAME.x / CAT_FRAME.w, CAT_FRAME.y / CAT_FRAME.h).play('cat_sit');
     this.pet.setScale(1 / textureResolution(this.pet.texture));
   }
 
@@ -435,7 +440,7 @@ export class BaseScene extends WorldScene {
     if (d > 3) {
       // упёрся в колонну, костёр или трон — сразу выбирает новую цель
       if (this.move(this.pet, (dx / d) * CAT.speed * dt, (dy / d) * CAT.speed * dt, CAT.radius)) this.petT = 0;
-      this.pet.play('cat_run', true).setFlipX(dx > 0);
+      this.pet.play(catRunKey(dx, dy), true).setFlipX(dx > 0);
     } else this.pet.play('cat_sit', true);
     this.pet.setDepth(this.pet.y);
     this.petShadow.setPosition(this.pet.x, this.pet.y + 1).setDepth(this.pet.y - 0.5);

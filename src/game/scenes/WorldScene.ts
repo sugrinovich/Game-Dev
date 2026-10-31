@@ -2,7 +2,7 @@ import Phaser from 'phaser';
 import { Player } from '../characters/Player';
 import { DEFAULT_PLAYER, PLAYER_CHARACTERS } from '../configs/characters';
 import { TEXTURES } from '../configs/assets';
-import { DEPTH, GAME, SCENES } from '../configs/game';
+import { CANVAS_SCALE, DEPTH, GAME, SCENES, WORLD_ZOOM } from '../configs/game';
 import { SETTINGS } from '../configs/settings';
 import { Colliders, moveCircle } from '../systems/Colliders';
 import { textureResolution } from '../systems/CastleModels';
@@ -69,7 +69,7 @@ export abstract class WorldScene extends Phaser.Scene implements Arena {
     this.hitStopLeft = 0;
     this.current = null;
     this.fx = new Effects(this);
-    this.cameras.main.setBounds(0, 0, this.mapW, this.mapH).setBackgroundColor(GAME.backgroundColor).setRoundPixels(true).setZoom(GAME.resolution);
+    this.cameras.main.setBounds(0, 0, this.mapW, this.mapH).setBackgroundColor(GAME.backgroundColor).setRoundPixels(true).setZoom(CANVAS_SCALE * Math.max(WORLD_ZOOM, GAME.width / this.mapW, GAME.height / this.mapH));
     this.cameras.main.fadeIn(450, 0, 0, 0);
     this.prompt = new PText(this, 0, 0, '', { ax: 0.5, ay: 1 }).setDepth(DEPTH.prompt).setVisible(false);
     this.holdGfx = this.add.graphics().setDepth(DEPTH.prompt - 1);   // под текстом подсказки: плашка и полоска удержания

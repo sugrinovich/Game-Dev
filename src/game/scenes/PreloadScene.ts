@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { TEXTURES } from '../configs/assets';
-import { COLORS, GAME, GLINT_EVERY, SCENES } from '../configs/game';
+import { CANVAS_SCALE, COLORS, GAME, GLINT_EVERY, SCENES } from '../configs/game';
 import { LOCATIONS, ROOM_IDS } from '../configs/items';
 import { ENEMY_TYPES } from '../configs/characters';
 import { ensureArrowTexture } from '../characters/Skeleton';
@@ -13,15 +13,20 @@ import { effectTextureJobs } from '../systems/MobArt';
 import { iconTextureJobs } from '../systems/IconArt';
 import { hallTextureJobs } from '../systems/HallModels';
 import { audio } from '../systems/Sfx';
-import { addTitleLogo, SiegeBackdrop, TITLE_DEPTH } from '../systems/TitleArt';
+import { addTitleLogo, makeTitleBasics, SiegeBackdrop, siegeTextureJobs, TITLE_DEPTH } from '../systems/TitleArt';
 
 const W = GAME.width;
 const H = GAME.height;
 
-/** Сколько миллисекунд за кадр отдавать на рисование текстур: остальное время — анимации заставки (60 FPS). */
-const JOB_BUDGET_MS = 6;
+/**
+ * Сколько миллисекунд за кадр отдавать на рисование текстур: остальное время — анимации заставки. HD-текстуры в 2,25 раза
+ * больше прежних — бюджет 12 мс: анимация загрузки остаётся плавной, а ждать вдвое меньше, чем при 6 мс.
+ */
+const JOB_BUDGET_MS = 12;
 /** Полоса-меч: начало клинка у гарды, середина клинка по высоте, длина клинка; раскалённый край в пикселях. */
 const SWORD = { x: 136, y: 124, len: 216, hot: 22 } as const;
+/** Сцена осады проявляется из темноты, когда её текстуры готовы (мс). */
+const BACKDROP_FADE_MS = 700;
 /** Как часто сменяется строка летописи или совета внизу (с). */
 const STORY_EVERY = 3.6;
 
@@ -72,9 +77,10 @@ export class PreloadScene extends Phaser.Scene {
   }
 
   create(): void {
-    this.cameras.main.setBackgroundColor(GAME.backgroundColor).setZoom(GAME.resolution).centerOn(W / 2, H / 2);
-    new SiegeBackdrop(this);
-    this.add.image(0, 0, 'title_vignette').setOrigin(0, 0).setDepth(TITLE_DEPTH.vignette).setAlpha(0.55);
+    this.cameras.main.setBackgroundColor(GAME.backgroundColor).setZoom(CANVAS_SCALE).centerOn(W / 2, H / 2);
+    // первый кадр — сразу: логотип, полоса и летопись; сцена осады рисуется первым этапом и проявляется (showBackdrop)
+    makeTitleBasics(this);
+    this.add.image(0, 0, 'title_vignette').setOrigin(0, 0).setScale(1 / GAME.resolution).setDepth(TITLE_DEPTH.vignette).setAlpha(0.55);
     addTitleLogo(this);
     this.fx = new Effects(this);
     const d = TITLE_DEPTH.ui;
@@ -93,13 +99,14 @@ export class PreloadScene extends Phaser.Scene {
   /** Всё, что рисуется кодом, — по этапам с понятными названиями. */
   private textureStages(): Stage[] {
     return [
+      { label: 'Разжигаем осаду', jobs: [...siegeTextureJobs(this), () => this.showBackdrop()] },
       { label: 'Возводим стены замка', jobs: [...castleTextureJobs(this), ...hallTextureJobs(this)] },
       {
         label: 'Мостим залы и арены', jobs: [
           ...castleGroundJobs(this, HALL_GROUND_KEY, HALL_SIZE.w, HALL_SIZE.h, 'hall'),
           ...castleFrontJobs(this, HALL_SIZE.w, HALL_SIZE.h, 'hall', null),
           // арены: четыре сплошные стены
-          ...LOCATIONS.flatMap((loc) => [
+          ...LOCATIONS.filter((loc) => !loc.soon).flatMap((loc) => [   // «скоро» — не готовим (их ещё не открыть)
             ...castleGroundJobs(this, arenaGroundKey(loc.theme), ARENA_SIZE.w, ARENA_SIZE.h, loc.theme),
             ...castleFrontJobs(this, ARENA_SIZE.w, ARENA_SIZE.h, loc.theme, null),
           ]),
@@ -115,6 +122,13 @@ export class PreloadScene extends Phaser.Scene {
       { label: 'Закаляем клинки', jobs: effectTextureJobs(this) },
       { label: 'Точим стрелы', jobs: [() => ensureArrowTexture(this)] },
     ];
+  }
+
+  /** Сцена осады готова: появляется под логотипом, из темноты. */
+  private showBackdrop(): void {
+    new SiegeBackdrop(this);
+    const cover = this.add.rectangle(0, 0, W, H, GAME.backgroundColor).setOrigin(0, 0).setDepth(TITLE_DEPTH.vignette - 1);
+    this.tweens.add({ targets: cover, alpha: 0, duration: BACKDROP_FADE_MS, ease: 'Sine.easeOut', onComplete: () => cover.destroy() });
   }
 
   /** Одна строка внизу: сначала по очереди летопись осады, потом советы — сменяются с плавным затуханием. */

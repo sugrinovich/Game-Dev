@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
-import { GAME } from '../configs/game';
-import { MODEL_AXES as MODEL_AXES_I, renderModel, type Axes, type Mark, type Part, type Surface, type Vec } from './Rig3D';
+import { CANVAS_SCALE, GAME } from '../configs/game';
+import { add, MODEL_AXES as MODEL_AXES_I, renderModel, type Axes, type Mark, type Part, type Surface, type Vec } from './Rig3D';
 import { addOutline, type Ramp as Ramp3 } from './Volume';
 import { readableCanvas } from './CastleModels';
 
@@ -281,7 +281,7 @@ function modelTexture(scene: Phaser.Scene, key: string, model: IconModel, size =
   renderModel({ data: img.data, width: F, x: 0, y: 0, w: F, h: F }, F / 2, F / 2, model.parts, model.marks ?? [], { facing: model.facing ?? 0, pitch: model.pitch ?? ICON_PITCH, scale: GAME.resolution });
   c.putImageData(img, 0, 0);
   addOutline(c, F, F, F, F);
-  tex.refresh(); tex.setFilter(Phaser.Textures.FilterMode.NEAREST);
+  tex.refresh(); tex.setFilter(Phaser.Textures.FilterMode.LINEAR);
 }
 
 /** Иконка на сцене: текстура детальнее пикселей игры — уменьшаем до размера ICON_SIZE (умножить на scale). */
@@ -289,36 +289,86 @@ export function addIcon(scene: Phaser.Scene, x: number, y: number, key: string, 
   return scene.add.image(x, y, key).setScale(scale / GAME.resolution);
 }
 
-/** Герб ордена 52x40: щит на скрещённых мечах, корона с камнями. */
-export function paintCrest(c: Ctx): void {
-  const W = 52, H = 40;
-  emboss(c, W, H, (x, y) => nearSegment(8, 36, 45, 5, 1.6)(x, y) || nearSegment(44, 36, 7, 5, 1.6)(x, y), MATERIAL.steel, 2);
-  for (const [x0, y0, x1, y1] of [[6, 31, 12, 37], [46, 31, 40, 37]] as const) emboss(c, W, H, nearSegment(x0, y0, x1, y1, 1.3), MATERIAL.gold, 2);
-  for (const [cx, cy] of [[5, 38], [47, 38]] as const) emboss(c, W, H, inCircle(cx, cy, 1.8), MATERIAL.ruby, 1);
-  const shield = inPoly([[13, 5], [39, 5], [39, 23], [26, 38], [13, 23]]);
-  const field = inPoly([[15, 7], [37, 7], [37, 22], [26, 35], [15, 22]]);
-  emboss(c, W, H, shield, MATERIAL.gold, 2);
-  emboss(c, W, H, field, (x) => (x < 26 ? MATERIAL.cloth : MATERIAL.navy), 4);
-  emboss(c, W, H, (x, y) => field(x, y) && ((x >= 25 && x <= 26) || (y >= 13 && y <= 14)), MATERIAL.gold, 1);
-  emboss(c, W, H, inPoly([[19, 5], [19, 0], [22, 3], [26, 0], [30, 3], [33, 0], [33, 5]]), MATERIAL.gold, 2);
-  for (const [x, col] of [[22, '#e84a66'], [26, '#5fe0d4'], [30, '#e84a66']] as const) { px(c, col, x, 3); px(c, '#ffffff', x, 2); }
-  px(c, '#ffffff', 16, 8); px(c, '#ffffff', 17, 8); px(c, '#ffffff', 16, 9);
+// ---------------- герб на заставке ----------------
+/**
+ * Герб ордена — 3D-модель, как иконки: выпуклый щит-«подушка» в золотой оправе (слева алое поле, справа синее,
+ * золотой крест), над ним корона с камнями, за щитом накрест два меча рукоятями вниз.
+ * Размер кадра (пиксели игры); щит: полуширина, верх, где начинает сужаться, острие (единицы модели от середины кадра, y вверх),
+ * ширина золотой оправы и креста, высота перекладины креста; наклон камеры — чуть сверху, видна толщина щита.
+ */
+const CREST = { w: 56, h: 44 } as const;
+const SHIELD = { half: 13, top: 15, waist: -3, tip: -18, rim: 1.8, cross: 0.9, crossY: 6.5 } as const;
+const CREST_PITCH = 0.25;
+/** Герб детальнее пикселей игры — пиксель в пиксель с экраном (показан на заставке крупно). */
+export const CREST_RES = CANVAS_SCALE;
+const CREST_INK = {
+  crimson: ['#ff9aa8', '#e8526a', '#c0304c', '#8a1c36', '#560c1e'],
+  navy: ['#a8bcff', '#6a84d8', '#3a529a', '#263872', '#141c44'],
+} as const satisfies Record<string, Ramp3>;
+
+/** Полуширина щита на высоте y (inset — на сколько уже, для оправы); −1 — выше или ниже щита. Низ сужается дугой к острию. */
+function shieldHalf(y: number, inset: number): number {
+  const top = SHIELD.top - inset, tip = SHIELD.tip + inset * 1.4, w = SHIELD.half - inset;
+  if (y > top || y < tip) return -1;
+  if (y >= SHIELD.waist) return w;
+  const k = (SHIELD.waist - y) / (SHIELD.waist - tip);
+  return w * Math.sqrt(1 - k * k);
+}
+const inShield = (x: number, y: number, inset: number): boolean => Math.abs(x) <= shieldHalf(y, inset);
+
+/** Меч за щитом: рукоять у (side·hx, hy), острие вверх-наружу; клинок с долом и сужением к острию, золотая гарда, рубин в навершии. */
+function crestSword(side: number): Part[] {
+  const pommel: Vec = [side * -21, -17.6, -2.4], guard: Vec = [side * -16.2, -13.4, -2.4], tip: Vec = [side * 19.6, 15.4, -2.4];
+  const len = Math.hypot(tip[0] - guard[0], tip[1] - guard[1]), d: Vec = [(tip[0] - guard[0]) / len, (tip[1] - guard[1]) / len, 0];
+  const axes: Axes = [[-d[1], d[0], 0], d, [0, 0, 1]], at = (t: number): Vec => [guard[0] + d[0] * t, guard[1] + d[1] * t, guard[2]];
+  return [
+    icBox(at(len / 2), [1.5, len / 2, 0.45], axes, (q) => {
+      if (q.y > 0.9 && Math.abs(q.x) > (1 - q.y) * 10) return null;   // острие
+      return Math.abs(q.x) < 0.16 && q.y < 0.8 ? I.iron : q.x * side < 0 ? I.steel : I.iron;
+    }),
+    icBox(at(0), [4.2, 0.7, 0.9], axes, I.gold),
+    icRod(at(-0.6), at(-4.4), 0.8, I.leather),
+    icBall(pommel, [1.6, 1.6, 1.6], I.gold), icBall(add(pommel, [0, 0, 1.2]), [0.9, 0.9, 0.7], I.ruby),
+  ];
 }
 
-/** Холст → рисунок → контур → текстура. */
-function iconTexture(scene: Phaser.Scene, key: string, w: number, h: number, paint: (c: Ctx) => void): void {
-  if (scene.textures.exists(key)) scene.textures.remove(key);
-  const tex = readableCanvas(scene, key, w, h);
-  if (!tex) return;
-  const c = tex.getContext(); c.imageSmoothingEnabled = false;
-  paint(c);
-  addOutline(c, w, h, w, h);
-  tex.refresh(); tex.setFilter(Phaser.Textures.FilterMode.NEAREST);
+function crestModel(): IconModel {
+  const R: Vec = [20, 26, 3.4], cy = -1.5;
+  const face = (q: Surface): Ramp3 | null => {
+    const x = q.x * R[0], y = cy + q.y * R[1];
+    if (q.z < 0 || !inShield(x, y, 0)) return null;
+    if (!inShield(x, y, SHIELD.rim)) return I.gold;
+    if (Math.abs(x) < SHIELD.cross || Math.abs(y - SHIELD.crossY) < SHIELD.cross) return I.gold;
+    return x < 0 ? CREST_INK.crimson : CREST_INK.navy;
+  };
+  const parts: Part[] = [
+    ...crestSword(1), ...crestSword(-1),
+    // толщина щита — золотое ребро под выпуклой лицевой стороной
+    icBox([0, cy, -0.4], [SHIELD.half + 0.5, 17.2, 1.6], MODEL_AXES_I, (q) => (inShield(q.x * (SHIELD.half + 0.5), cy + q.y * 17.2, -0.4) ? I.goldDark : null)),
+    icBall([0, cy, 0.9], R, face),
+    // корона: обод, три зубца с шариками, камни на ободе
+    icBox([0, 17, 0.6], [6.6, 1.5, 1.6], MODEL_AXES_I, I.gold),
+    ...[-4.8, 0, 4.8].flatMap((x): Part[] => [icBall([x, 19.4, 0.6], [1.2, 2.4, 1.1], I.gold), icBall([x, 21.8, 0.6], [0.8, 0.8, 0.8], I.gold)]),
+  ];
+  const marks: Mark[] = [
+    { p: [-2.6, 17, 2.3], color: '#e84a66', n: [0, 0, 1] }, { p: [0, 17, 2.3], color: '#5fe0d4', n: [0, 0, 1] }, { p: [2.6, 17, 2.3], color: '#e84a66', n: [0, 0, 1] },
+    { p: [-8.4, 11.6, 3.9], color: GLINT, n: [0, 0, 1] }, { p: [-7.4, 12, 3.9], color: GLINT, n: [0, 0, 1] },
+  ];
+  return { parts, marks, pitch: CREST_PITCH };
 }
 
-/** Герб для заставки (рисуется сразу — он нужен уже экрану загрузки). */
+/** Герб для заставки (рисуется сразу — он нужен уже экрану загрузки). Показывать уменьшенным в CREST_RES раз. */
 export function makeCrestTexture(scene: Phaser.Scene): void {
-  if (!scene.textures.exists('title_crest')) iconTexture(scene, 'title_crest', 52, 40, paintCrest);
+  const key = 'title_crest';
+  if (scene.textures.exists(key)) return;
+  const W = CREST.w * CREST_RES, H = CREST.h * CREST_RES, model = crestModel();
+  const tex = readableCanvas(scene, key, W, H);
+  if (!tex) return;
+  const c = tex.getContext(), img = c.createImageData(W, H);
+  renderModel({ data: img.data, width: W, x: 0, y: 0, w: W, h: H }, W / 2, H / 2, model.parts, model.marks ?? [], { facing: 0, pitch: model.pitch ?? ICON_PITCH, scale: CREST_RES });
+  c.putImageData(img, 0, 0);
+  addOutline(c, W, H, W, H);
+  tex.refresh(); tex.setFilter(Phaser.Textures.FilterMode.LINEAR);
 }
 
 /** Иконки интерфейса и лавки — 3D-модели, по заданию на иконку. */

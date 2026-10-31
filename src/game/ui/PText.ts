@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { TEXTURES } from '../configs/assets';
-import { COLORS, GAME } from '../configs/game';
-import { FONT_INK, FONTS, type FontKey } from './PixelFont';
+import { COLORS } from '../configs/game';
+import { FONT_INK, FONT_RES, FONTS, type FontKey } from './PixelFont';
 
 export interface PTextOptions {
   /** ui — обычный текст, big — плоские надписи, title — объёмное название игры. */
@@ -79,7 +79,7 @@ export class PText extends Phaser.GameObjects.Container {
   glint(): void {
     if (this.shine?.visible) return;
     // пикселей рисунка шрифта на пиксель игры; у крупного шрифта буквы, полоса и наклон вдвое шире
-    const R = GAME.resolution, k = FONTS[this.font].scale * R;
+    const R = FONT_RES * FONTS[this.font].detail, k = FONTS[this.font].scale * R;
     if (!this.shine) {
       const m = this.main;
       this.shine = this.scene.add.dynamicBitmapText(0, 0, this.font, m.text, FONTS[this.font].lineHeight).setOrigin(m.originX, m.originY).setBlendMode(Phaser.BlendModes.ADD);

@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { textureResolution } from '../systems/CastleModels';
 import { TEXTURES } from '../configs/assets';
 import { ENEMY_TYPES } from '../configs/characters';
 import { SETTINGS } from '../configs/settings';
@@ -61,7 +62,8 @@ export class AbyssKing extends Mob {
     this.arena.fx.ring(to.x, to.y, KING.blastRadius, 0xff7a2a, KING.flight);
     this.arena.fx.burst({ x: from.x, y: from.y, count: 12, speed: [20, 60], life: [0.3, 0.6], size: [2, 4], tints: [0xa040ff, 0xe0a0ff, 0xffffff], blend: Phaser.BlendModes.ADD, depth: this.y + 40 });
     this.arena.playSfx('warn');
-    const sprite = this.scene.add.sprite(from.x, from.y, 'fireball', '0').setScale(0.4).play('fireball');
+    const sprite = this.scene.add.sprite(from.x, from.y, 'fireball', '0').play('fireball');
+    sprite.setScale(0.4 / textureResolution(sprite.texture));
     this.bolts.push({ sprite, from, ctrl, to, t: 0 });
   }
 
@@ -71,7 +73,7 @@ export class AbyssKing extends Mob {
       b.t = Math.min(1, b.t + dt / KING.flight);
       const u = 1 - b.t;
       this.pos.set(u * u * b.from.x + 2 * u * b.t * b.ctrl.x + b.t * b.t * b.to.x, u * u * b.from.y + 2 * u * b.t * b.ctrl.y + b.t * b.t * b.to.y);
-      b.sprite.setPosition(this.pos.x, this.pos.y).setScale(0.4 + b.t * 0.5).setDepth(b.to.y + 50);
+      b.sprite.setPosition(this.pos.x, this.pos.y).setScale((0.4 + b.t * 0.5) / textureResolution(b.sprite.texture)).setDepth(b.to.y + 50);
       this.arena.fx.burst({ x: this.pos.x, y: this.pos.y, count: 1, speed: [5, 25], life: [0.2, 0.45], size: [2, 4], tints: [0xffe070, 0xffa030, 0xf05a1e], gravity: -15, blend: Phaser.BlendModes.ADD, depth: b.to.y + 49 });
       if (b.t < 1) continue;
       // взрыв: урон, если герой не ушёл из круга

@@ -1,4 +1,4 @@
-import { lit, type Ramp } from './Volume';
+import { litCel, type Ramp } from './Volume';
 
 /*
  * Маленький 3D-рендер для персонажей и предметов. Модель — набор простых тел: эллипсоиды (голова, туловище, кисти),
@@ -47,14 +47,16 @@ export interface Mark { p: Vec; color: string; n?: Vec }
 
 export const MODEL_AXES: Axes = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
 /** Наклон камеры: насколько она смотрит сверху (радианы). */
-export const CAMERA_PITCH = (25 * Math.PI) / 180;
+/** Наклон камеры: 45° сверху — видны верх объектов (крыши, плечи, головы) и их бока. */
+export const CAMERA_PITCH = (45 * Math.PI) / 180;
 /** Деталь видна, если лежит не глубже поверхности на столько единиц. */
 const MARK_DEPTH = 0.9;
 /** Деталь с нормалью видна, если повёрнута к камере хотя бы на столько (косинус угла). */
 const MARK_FACING = 0.15;
 
 /** Как смотреть на модель: поворот вокруг вертикали (0 — лицом к камере), пикселей кадра на единицу модели, наклон камеры. */
-export interface View { facing: number; scale?: number; pitch?: number }
+/** aa — сглаживать края (по умолчанию да). */
+export interface View { facing: number; scale?: number; pitch?: number; aa?: boolean }
 
 /**
  * Поворот модели к камере: персонаж повёрнут вокруг вертикали на facing (0 — лицом к камере, «вниз» по экрану),
@@ -84,6 +86,9 @@ function rgb(hex: string): number {
   if (v === undefined) { v = parseInt(hex.slice(1, 7), 16); rgbCache.set(hex, v); }
   return v;
 }
+
+/** Точки внутри пикселя для сглаживания краёв (сетка 2x2). */
+const AA_SAMPLES = [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]] as const;
 
 /** Результат пересечения луча с телом (общий, чтобы не создавать объекты на каждый пиксель). */
 const hit = { d: 0, nx: 0, ny: 0, nz: 1, lx: 0, ly: 0, lz: 0 };
@@ -241,44 +246,104 @@ export interface Target { data: Uint8ClampedArray; width: number; x: number; y: 
  */
 export function renderModel(t: Target, anchorX: number, anchorY: number, parts: Iterable<Part>, marks: readonly Mark[], view: View): void {
   const FW = t.w, FH = t.h, k = view.scale ?? 1, m = cameraMatrix(view.facing, view.pitch);
+  // градиент по высоте — только у моделей «на полу» (у вида строго сверху, как кромки стен, его нет)
+  const grounded = (view.pitch ?? CAMERA_PITCH) < 1.2;
   const depth = new Float32Array(FW * FH).fill(-Infinity);
-  const put = (px: number, py: number, color: number): void => {
+  // какая часть видна в пикселе (−1 — пусто): по этому сглаживаются края фигуры и стыки частей
+  const owner = new Int32Array(FW * FH).fill(-1);
+  const put = (px: number, py: number, color: number, alpha = 255): void => {
     const k = ((t.y + py) * t.width + t.x + px) * 4;
-    t.data[k] = (color >> 16) & 255; t.data[k + 1] = (color >> 8) & 255; t.data[k + 2] = color & 255; t.data[k + 3] = 255;
+    t.data[k] = (color >> 16) & 255; t.data[k + 1] = (color >> 8) & 255; t.data[k + 2] = color & 255; t.data[k + 3] = alpha;
   };
-  for (const part of parts) {
-    const s = prepare(m, part.shape, k);
+  const prepared = [...parts].map((part) => ({ part, s: prepare(m, part.shape, k) }));
+  /** Луч в точке (x, y) кадра относительно опоры: пересекает ли часть pi (результат — в hit). */
+  const hits = (pi: number, x: number, y: number): boolean => {
+    const { part, s } = prepared[pi]!, sh = part.shape;
+    return sh.kind === 'ball' ? hitBall(s, s.r, x, y) : sh.kind === 'rod' ? hitRod(s, s.r[0], x, y) : sh.kind === 'cyl' ? hitCyl(s, s.r[0], x, y) : hitBox(s, s.r, x, y);
+  };
+  /** Цвет точки части pi после попадания (hit): раскраска и светотень; −1 — часть здесь прозрачна. */
+  const shadeHit = (pi: number, y: number): number => {
+    const part = prepared[pi]!.part, sh = part.shape;
+    const l = Math.hypot(hit.nx, hit.ny, hit.nz) || 1;
+    const nx = hit.nx / l, ny = hit.ny / l, nz = hit.nz / l;
+    let shade: Shade;
+    if (typeof part.paint === 'function') {
+      const n = toModel(m, [nx, ny, nz]);
+      // у капсулы «вокруг кости» — по нормали в модели
+      const round = sh.kind === 'rod' || sh.kind === 'cyl';
+      shade = part.paint({ x: round ? n[0] : hit.lx, y: hit.ly, z: round ? n[2] : hit.lz, n });
+    } else shade = part.paint;
+    if (shade === null) return -1;
+    return typeof shade === 'string' ? rgb(shade) : litCel(shade, nx, ny, nz, grounded ? -y / k : null);
+  };
+  prepared.forEach(({ s }, pi) => {
     const px0 = Math.max(0, Math.floor(anchorX + s.x0)), px1 = Math.min(FW - 1, Math.ceil(anchorX + s.x1));
     const py0 = Math.max(0, Math.floor(anchorY + s.y0)), py1 = Math.min(FH - 1, Math.ceil(anchorY + s.y1));
     for (let py = py0; py <= py1; py++) {
       const y = py + 0.5 - anchorY;
       for (let px = px0; px <= px1; px++) {
-        const x = px + 0.5 - anchorX;
-        const sh = part.shape;
-        const ok = sh.kind === 'ball' ? hitBall(s, s.r, x, y) : sh.kind === 'rod' ? hitRod(s, s.r[0], x, y) : sh.kind === 'cyl' ? hitCyl(s, s.r[0], x, y) : hitBox(s, s.r, x, y);
         const i = py * FW + px;
-        if (!ok || hit.d <= depth[i]!) continue;
-        const l = Math.hypot(hit.nx, hit.ny, hit.nz) || 1;
-        const nx = hit.nx / l, ny = hit.ny / l, nz = hit.nz / l;
-        let shade: Shade;
-        if (typeof part.paint === 'function') {
-          const n = toModel(m, [nx, ny, nz]);
-          // у капсулы «вокруг кости» — по нормали в модели
-          const round = sh.kind === 'rod' || sh.kind === 'cyl';
-          shade = part.paint({ x: round ? n[0] : hit.lx, y: hit.ly, z: round ? n[2] : hit.lz, n });
-        } else shade = part.paint;
-        if (shade === null) continue;
-        depth[i] = hit.d;
-        put(px, py, rgb(typeof shade === 'string' ? shade : shade[lit(nx, ny, nz)]!));
+        if (!hits(pi, px + 0.5 - anchorX, y) || hit.d <= depth[i]!) continue;
+        const color = shadeHit(pi, y);
+        if (color < 0) continue;
+        depth[i] = hit.d; owner[i] = pi;
+        put(px, py, color);
       }
     }
+  });
+  if (view.aa !== false) antialias();
+  /**
+   * Сглаживание краёв (HD): пиксели на границе — край фигуры или стык разных частей — пересчитываются по AA_SAMPLES
+   * точкам внутри пикселя (проверяются только части этого пикселя и его соседей), цвет и прозрачность усредняются.
+   * Узоры внутри одной части (кладка, швы) не трогаются — остаются чёткими.
+   */
+  function antialias(): void {
+    // 1) дешёвый проход: пиксель на границе, если хоть один из 8 соседей принадлежит другой части (или это край кадра)
+    const edge = new Uint8Array(FW * FH);
+    const differ = (i: number, j: number): void => { if (owner[i] !== owner[j]) { edge[i] = 1; edge[j] = 1; } };
+    for (let py = 0; py < FH; py++) for (let px = 0; px < FW; px++) {
+      const i = py * FW + px, right = px + 1 < FW, down = py + 1 < FH;
+      if (owner[i]! >= 0 && (px === 0 || py === 0 || !right || !down)) edge[i] = 1;
+      if (right) differ(i, i + 1);
+      if (down) { differ(i, i + FW); if (right) differ(i, i + FW + 1); if (px > 0) differ(i, i + FW - 1); }
+    }
+    // 2) только пиксели на границе: AA_SAMPLES точек, проверяются части этого пикселя и его соседей
+    const near: number[] = [], done: [number, number, number][] = [];
+    for (let i = 0; i < FW * FH; i++) {
+      if (!edge[i]) continue;
+      const px = i % FW, py = (i - px) / FW;
+      near.length = 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const x = px + dx, y = py + dy;
+        const n = x < 0 || y < 0 || x >= FW || y >= FH ? -1 : owner[y * FW + x]!;
+        if (n >= 0 && !near.includes(n)) near.push(n);
+      }
+      if (near.length === 0) continue;
+      let r = 0, g = 0, b = 0, cover = 0;
+      for (const [sx, sy] of AA_SAMPLES) {
+        const x = px + sx - anchorX, y = py + sy - anchorY;
+        let best = -Infinity, color = -1;
+        for (const pi of near) {
+          if (!hits(pi, x, y) || hit.d <= best) continue;
+          const c = shadeHit(pi, y);
+          if (c >= 0) { best = hit.d; color = c; }
+        }
+        if (color < 0) continue;
+        r += (color >> 16) & 255; g += (color >> 8) & 255; b += color & 255; cover++;
+      }
+      if (cover > 0) done.push([i, ((r / cover) << 16) | ((g / cover) << 8) | (b / cover), Math.round((cover / AA_SAMPLES.length) * 255)]);
+    }
+    for (const [i, color, alpha] of done) put(i % FW, Math.floor(i / FW), color, alpha);
   }
   const size = Math.max(1, Math.round(k));
   for (const mk of marks) {
     const c = mul(toCam(m, mk.p), k);
     const px = Math.floor(anchorX + c[0] - (size - 1) / 2), py = Math.floor(anchorY + c[1] - (size - 1) / 2);
     if (mk.n && toCam(m, mk.n)[2] < MARK_FACING) continue;
+    // HD: точечная деталь (глаз, заклёпка, пуговица) — круглая, а не квадрат
+    const mid = (size - 1) / 2, round = (size / 2) ** 2 + 0.25;
     for (let y = py; y < py + size; y++) for (let x = px; x < px + size; x++) {
+      if (size > 2 && (x - px - mid) ** 2 + (y - py - mid) ** 2 > round) continue;
       if (x < 0 || y < 0 || x >= FW || y >= FH || c[2] < depth[y * FW + x]! - MARK_DEPTH * k) continue;
       put(x, y, rgb(mk.color));
     }

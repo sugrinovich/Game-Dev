@@ -1,9 +1,9 @@
 import Phaser from 'phaser';
-import { PLAYER_DIRECTIONS, TEXTURES, type PlayerDirection } from '../configs/assets';
-import { COLORS, DEPTH, GAME, KEYS } from '../configs/game';
+import { HERO_SHEET, type PlayerDirection, PLAYER_DIRECTIONS, TEXTURES } from '../configs/assets';
+import { CANVAS_SCALE, COLORS, DEPTH, GAME, KEYS } from '../configs/game';
 import { ARMOR_SLOT_NAMES, ARMOR_SLOTS, BAG, EQUIPMENT, EQUIPMENT_IDS, ITEM_KIND_NAMES, POCKETS, RARITIES, type ArmorSlot, type EquipmentId } from '../configs/items';
 import { outfitFor } from '../characters/Player';
-import { ensureHeroSheet, FIGURE_SCALE, heroAnimKey, heroOrigin } from '../systems/HeroArt';
+import { ensureHeroSheet, heroAnimKey, heroOrigin, heroPortraitJobs, heroPortraitKey, PORTRAIT_TAG, portraitSide } from '../systems/HeroArt';
 import { addIcon } from '../systems/IconArt';
 import { audio } from '../systems/Sfx';
 import { session, shapeCells, type BagSpot } from '../state/Session';
@@ -70,6 +70,11 @@ const STASH = { x: GRID.x, y: GRID.y + BAG.rows * CELL + SPACE.section + SPACE.l
 const STASH_SIZE = POCKETS;
 /** Как герой поворачивается в окне: по кругу. */
 const TURN: readonly PlayerDirection[] = ['down', 'down-left', 'left', 'up-left', 'up', 'up-right', 'right', 'down-right'];
+/**
+ * Портрет героя (HeroArt.heroPortraitJobs) детальнее обычного листа — пиксель в пиксель с экраном. Рисуется в фоне,
+ * пока окно открыто: не дольше budgetMs за кадр; пока сторона не готова, показан обычный лист.
+ */
+const PORTRAIT = { res: HERO.scale * CANVAS_SCALE, budgetMs: 10 } as const;
 
 /** Цвета клетки предмета — по его классу (редкости): заливка и кант. */
 function tileColors(id: EquipmentId): { fill: number; edge: number } { return RARITIES[EQUIPMENT[id].rarity]; }
@@ -92,6 +97,10 @@ export class InventoryWindow {
   private readonly g: Phaser.GameObjects.Graphics;
   private readonly hero: Phaser.GameObjects.Sprite;
   private sheet = '';
+  private outfit = outfitFor(session.data.equipped);
+  /** Задания портрета, которые ещё не выполнены; показан ли сейчас портрет (а не обычный лист). */
+  private portraitJobs: (() => void)[] = [];
+  private showingPortrait = false;
   private turn = 0;
   private turnT: number = HERO.turnEvery;
   private focus: Focus = { area: 'bag', x: 0, y: 0 };
@@ -114,9 +123,11 @@ export class InventoryWindow {
     const title = new PText(scene, W / 2, 0, 'Инвентарь', { font: 'big', ax: 0.5, color: COLORS.blade });
     title.setY(drawTitleRibbon(frame, W / 2, WIN.y, title.textWidth));
     const pedestal = scene.add.image(HERO.x, HERO.y, TEXTURES.shadow).setScale(2.2, 1.6);
-    this.sheet = ensureHeroSheet(scene, outfitFor(session.data.equipped));
+    this.sheet = ensureHeroSheet(scene, this.outfit);
     const o = heroOrigin();
-    this.hero = scene.add.sprite(HERO.x, HERO.y, this.sheet, '0').setOrigin(o.x, o.y).setScale(HERO.scale / (GAME.resolution * FIGURE_SCALE));   // лист фигур крупнее — в окне герой того же размера
+    this.hero = scene.add.sprite(HERO.x, HERO.y, this.sheet, '0').setOrigin(o.x, o.y);
+    this.dropPortraits();
+    this.queuePortraits();
     this.g = scene.add.graphics();
     this.bagLabel = new PText(scene, GRID.x, LABEL_Y, '', { color: COLORS.gold });
     this.box.add([dim, frame, title, pedestal, this.hero, this.g,
@@ -136,6 +147,7 @@ export class InventoryWindow {
 
   /** Каждый кадр: герой поворачивается, чтобы было видно его со всех сторон. */
   update(dt: number): void {
+    this.drawPortrait();
     if ((this.turnT -= dt) > 0) return;
     this.turnT = HERO.turnEvery;
     this.turn = (this.turn + 1) % TURN.length;
@@ -165,6 +177,7 @@ export class InventoryWindow {
     this.scene.input.off('pointermove', this.onMove);
     this.scene.input.off('pointerdown', this.onDown);
     this.scene.input.off('pointerup', this.onUp);
+    this.dropPortraits();
     this.box.destroy();
     this.onClose();
   }
@@ -385,12 +398,51 @@ export class InventoryWindow {
 
   /** Снаряжение изменилось: герой переодевается. */
   private changed(): void {
-    const sheet = ensureHeroSheet(this.scene, outfitFor(session.data.equipped));
-    if (sheet !== this.sheet) { this.sheet = sheet; this.playHero(); }
+    const outfit = outfitFor(session.data.equipped), sheet = ensureHeroSheet(this.scene, outfit);
+    if (sheet !== this.sheet) {
+      this.outfit = outfit; this.sheet = sheet;
+      this.playHero();
+      this.dropPortraits();
+      this.queuePortraits();
+    }
     this.refresh();
   }
 
-  private playHero(): void { this.hero.setTexture(this.sheet, '0').play(heroAnimKey(this.sheet, 'idle', TURN[this.turn] ?? PLAYER_DIRECTIONS[0])); }
+  /** Герой смотрит в сторону TURN[turn]: портретом, если эта сторона уже нарисована, иначе обычным листом. */
+  private playHero(): void {
+    const dir = TURN[this.turn] ?? PLAYER_DIRECTIONS[0], side = portraitSide(dir), key = this.portraitKey();
+    this.showingPortrait = this.scene.anims.exists(key);
+    if (this.showingPortrait) this.hero.setTexture(key, '0').setFlipX(side.flip).play(key);
+    else this.hero.setTexture(this.sheet, '0').setFlipX(false).play(heroAnimKey(this.sheet, 'idle', dir));
+    // в окне герой одного размера, как бы детально ни был нарисован лист
+    this.hero.setScale((HERO.scale * HERO_SHEET.frameSize) / this.hero.frame.realWidth);
+  }
+
+  private portraitKey(): string { return heroPortraitKey(this.outfit, portraitSide(TURN[this.turn] ?? PLAYER_DIRECTIONS[0]).dir); }
+
+  /** Стороны портрета по порядку поворота, начиная с текущей (зеркальные — одна текстура на две стороны). */
+  private queuePortraits(): void {
+    const sides = new Set(TURN.map((_, i) => portraitSide(TURN[(this.turn + i) % TURN.length]!).dir));
+    this.portraitJobs = [...sides].flatMap((dir) => heroPortraitJobs(this.scene, this.outfit, dir, PORTRAIT.res));
+  }
+
+  /** Дорисовывает портрет понемногу за кадр; как только текущая сторона готова — герой сменяется на портрет. */
+  private drawPortrait(): void {
+    if (this.portraitJobs.length === 0) return;
+    const until = performance.now() + PORTRAIT.budgetMs;
+    while (this.portraitJobs.length > 0 && performance.now() < until) this.portraitJobs.shift()!();
+    if (!this.showingPortrait && this.scene.anims.exists(this.portraitKey())) this.playHero();
+  }
+
+  /** Убирает портреты других нарядов и недорисованные (окно закрыли посреди рисования): они занимают память видеокарты. */
+  private dropPortraits(): void {
+    for (const key of this.scene.textures.getTextureKeys()) {
+      if (!key.includes(PORTRAIT_TAG) || key === this.hero.texture.key) continue;
+      if (key.startsWith(`${this.sheet}${PORTRAIT_TAG}`) && this.scene.anims.exists(key)) continue;
+      this.scene.textures.remove(key);
+      this.scene.anims.remove(key);
+    }
+  }
 
   // ---------------- отрисовка ----------------
   private refresh(): void {

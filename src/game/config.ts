@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { GAME } from './configs/game';
+import { CANVAS_SCALE, GAME } from './configs/game';
 import { BootScene } from './scenes/BootScene';
 import { PreloadScene } from './scenes/PreloadScene';
 import { MenuScene } from './scenes/MenuScene';
@@ -25,12 +25,11 @@ export function createGame(parent: string): Phaser.Game {
   const config: Phaser.Types.Core.GameConfig = {
     type: Phaser.AUTO,
     parent,
-    width: GAME.width * GAME.resolution,
-    height: GAME.height * GAME.resolution,
+    width: GAME.width * CANVAS_SCALE,
+    height: GAME.height * CANVAS_SCALE,
     backgroundColor: GAME.backgroundColor,
-    // Nearest-фильтр сохраняет резкими пиксельные спрайты и bitmap-шрифты.
-    pixelArt: true,
-    smoothPixelArt: false,
+    // HD: текстуры сглаживаются (резкими остаются только то, что ещё нарисовано в пикселях игры, и пиксельный шрифт)
+    pixelArt: false,
     // спрайты стоят ровно на целых пикселях, как и карта — ничего не «дрожит» друг относительно друга
     roundPixels: true,
     // просим у браузера производительную видеокарту (на ноутбуках с двумя GPU)
@@ -40,7 +39,7 @@ export function createGame(parent: string): Phaser.Game {
     scene: [BootScene, PreloadScene, MenuScene, BaseScene, RoomScene, ExpeditionScene, UIScene],
     scale: {
       mode: Phaser.Scale.NONE,
-      zoom: pickZoom() / GAME.resolution,
+      zoom: pickZoom() / CANVAS_SCALE,
       autoCenter: Phaser.Scale.CENTER_BOTH,
       // во весь экран уходит сам контейнер — вместе с холстом гладких пикселей
       fullscreenTarget: parent,
@@ -51,7 +50,7 @@ export function createGame(parent: string): Phaser.Game {
   const game = new Phaser.Game(config);
   if (GAME.smoothPixels) game.events.once(Phaser.Core.Events.READY, () => attachSmoothPixels(game));
   window.addEventListener('resize', () => {
-    game.scale.setZoom(pickZoom() / GAME.resolution);
+    game.scale.setZoom(pickZoom() / CANVAS_SCALE);
     game.scale.refresh();
   });
   return game;

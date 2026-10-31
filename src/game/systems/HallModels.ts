@@ -1,8 +1,8 @@
 import Phaser from 'phaser';
 import { GAME } from '../configs/game';
 import { archY, DOORWAY } from './CastleArt';
-import { ball, box, bricks, cyl, dot, flame, hash, M, modelSheetJobs, rod, yaw, type Anchor, type Model } from './CastleModels';
-import { add, CAMERA_PITCH, cross, mul, norm, type Axes, type Mark, type Paint, type Part, type Shade, type Surface, type Vec } from './Rig3D';
+import { ball, box, bricks, cyl, dot, firePaint, flame, flameTongue, flat, front, hash, M, modelSheetJobs, rod, roll, VIEW_DIR, yaw, type Anchor, type Model } from './CastleModels';
+import { add, cross, mul, norm, type Axes, type Mark, type Paint, type Part, type Shade, type Surface, type Vec } from './Rig3D';
 import { ramp, type Ramp } from './Volume';
 
 /*
@@ -63,6 +63,9 @@ function dais(parts: Part[]): void {
   parts.push(step(1.5, [38, 1.5, 15], 2), step(4.5, [30, 1.5, 10], -2));
 }
 
+/** Капитоне на спинке трона: шаг ромбов (единицы модели) и толщина стёжки (доля шага). */
+const TUFT = { step: 4.2, seam: 0.07 } as const;
+
 /** Трон: резное основание в золотой раме, бархатная подушка, стрельчатая спинка с рамками, столбы с шарами, подлокотники-львы. */
 function throneChair(parts: Part[], marks: Mark[]): void {
   const backTop = (x: number): number => 44 + 8 * (1 - Math.abs(x) / 13);
@@ -77,7 +80,9 @@ function throneChair(parts: Part[], marks: Mark[]): void {
       if (edge < 1.8) return M.gold;
       if (edge < 2.6) return H.oakDark;
       if (Math.abs(edge - 3.4) < 0.35) return M.gold;
-      return Math.abs(x) % 3 < 0.3 && y < 40 ? H.velvetDark : H.velvet;
+      // капитоне: ромбы, прошитые тёмной стёжкой (пуговицы — точками ниже)
+      const u = (x + y) / TUFT.step, v = (x - y) / TUFT.step;
+      return Math.min(Math.abs(u - Math.round(u)), Math.abs(v - Math.round(v))) < TUFT.seam ? H.velvetDark : H.velvet;
     }),
     ball([0, 52.6, -11], [1.8, 2.4, 1.8], M.gold), ball([0, 55.4, -11], [0.9, 0.9, 0.9], M.goldBright),
   );
@@ -88,6 +93,11 @@ function throneChair(parts: Part[], marks: Mark[]): void {
       box([x * 0.93, 19.4, -2.6], [1.9, 1, 7.4], H.oakDark), ball([x * 0.93, 19.8, 5], [2.1, 2.1, 2.1], M.gold),
       box([x * 0.93, 13, 3.6], [1.4, 6, 1.3], H.oakDark),
     );
+  }
+  // пуговицы капитоне — на пересечениях стёжки, внутри рамки спинки
+  for (let u = -8; u <= 8; u++) for (let v = -8; v <= 8; v++) {
+    const x = ((u + v) * TUFT.step) / 2, y = ((u - v) * TUFT.step) / 2;
+    if (Math.abs(x) < 8.5 && y > 14 && y < backTop(x) - 5) marks.push({ p: [x, y, -9.3], color: '#e8c060', n: [0, 0, 1] });
   }
   // золотая корона-герб на спинке над головой короля
   for (const [x, y] of [[-2.4, 45.6], [-1.2, 44.8], [0, 46], [1.2, 44.8], [2.4, 45.6], [-2, 44], [-1, 44], [0, 44], [1, 44], [2, 44]] as const) {
@@ -101,26 +111,34 @@ const ribs: Paint = (s) => {
   if (s.y < -0.55) return C.shade;
   return Math.floor((s.y + 1) * 4.5) % 2 === 0 ? H.bone : C.shade;
 };
-/** Горностай: белый мех с чёрными хвостиками. */
-const ermine: Paint = (s) => (hash(Math.floor((s.x + 1) * 7), Math.floor((s.z + 1) * 4), 3) > 0.8 ? '#1a1416' : H.ermine);
+/** Мантия: складки — тёмные полосы бархата. */
+const robe = (s: Surface): Ramp => (Math.sin(s.x * 14) > 0.62 ? H.velvetDark : H.velvet);
+/** Воротник из горностая: гладкий белый мех, чёрные хвостики — точками (deadKing). */
+const COLLAR: [Vec, Vec] = [[0, 31, -5.2], [8.8, 2.2, 4.4]];
 
 /** Король Бездны давно мёртв: скелет в мантии осел на троне, череп склонён, корона съехала, скипетр выпал на ступени. */
 function deadKing(parts: Part[], marks: Mark[]): void {
   const bone = (a: Vec, b: Vec, r = 0.8): Part => rod(a, b, r, H.bone);
   parts.push(
-    ball([0, 24.5, -8], [9.6, 10.5, 3.4], H.velvet),
-    ball([-6.2, 24, -4], [3.8, 7.6, 3.6], H.velvet), ball([6.2, 24, -4], [3.8, 7.6, 3.6], H.velvet),
+    ball([0, 24.5, -8], [9.6, 10.5, 3.4], robe),
+    ball([-6.2, 24, -4], [3.8, 7.6, 3.6], robe), ball([6.2, 24, -4], [3.8, 7.6, 3.6], robe),
     ball([0, 25.6, -4.6], [4.4, 5.2, 3.2], ribs),
-    ball([0, 31, -5.2], [8.8, 2.2, 4.4], ermine),
+    ball(COLLAR[0], COLLAR[1], H.ermine),
     ball([0, 18, -1.2], [7.6, 2.8, 6.6], (s) => (s.z > 0.75 && s.y < 0.2 ? M.gold : H.velvet)),
-    box([0, 13.4, 6], [6.8, 4.4, 0.6], (s) => (s.y < -0.5 + 0.35 * Math.sin(s.x * 9) ? null : s.y < -0.2 ? H.velvetDark : H.velvet)),
+    box([0, 13.4, 6], [6.8, 4.4, 0.6], (s) => {
+      const hem = -0.5 + 0.35 * Math.sin(s.x * 9);
+      return s.y < hem ? null : s.y < hem + 0.16 ? M.gold : robe(s);   // золотая кайма по краю
+    }),
     rod([0, 29.6, -4.6], [-1.2, 32.8, -3.4], 0.75, H.bone),
   );
   // череп склонён набок, челюсть отвисла
   parts.push(ball([-1.4, 35.4, -2.8], [3.2, 3.4, 3.1], H.bone), ball([-1.2, 32.5, -1.8], [2.3, 1.1, 2.1], H.boneDark));
-  for (const [x, y] of [[-2.6, 35.6], [-0.2, 35.4]] as const) {
-    marks.push({ p: [x, y, 0.2], color: '#1a1214', n: [0, 0, 1] }, { p: [x + 0.6, y - 0.5, 0.2], color: '#1a1214', n: [0, 0, 1] });
+  // глазницы — тёмные впадины, в глубине тлеет лиловый огонёк Бездны
+  for (const [x, y] of [[-2.3, 35.3], [0.3, 35.1]] as const) {
+    parts.push(ball([x, y, -0.15], [0.9, 1, 0.55], flat('#120c10')));
+    marks.push({ p: [x, y - 0.1, 0.45], color: '#c080ff', n: [0, 0, 1] });
   }
+  for (let i = 0; i < 7; i++) marks.push({ ...front(COLLAR[0], COLLAR[1], -0.78 + i * 0.26, 0.15 - (i % 2) * 0.35), color: '#1a1416' });
   marks.push({ p: [-1.3, 34.1, 0.3], color: C.shade, n: [0, 0, 1] });
   for (let x = -2.8; x <= 0.4; x += 0.8) marks.push({ p: [x, 33.2, 0.1], color: '#d8ceb0', n: [0, 0, 1] });
   crown(parts, marks, [-0.9, 38.6, -2.9]);
@@ -178,25 +196,51 @@ function throne(): Model {
 const LEAF = { w: 32, h: 44, ax: 16, ay: 40 } as const;
 const inLeaf = (x: number, y: number): boolean => Math.abs(x) <= DOORWAY.half && y >= 0 && y <= archTop(x, DOORWAY.half, DOORWAY.spring, DOORWAY.apex);
 
-/** Заперто: дверь из досок в глубине ниши, железные полосы с гвоздями, крест-накрест цепи и большой замок. */
+/**
+ * Заперто: дверь из досок в глубине ниши — у каждой доски свои волокна; накладные железные полосы с клёпками,
+ * кольцо-ручка; крест-накрест цепи из звеньев (через одно повёрнуты поперёк) и большой замок с дужкой и скважиной.
+ * LOCK: где полосы, сколько звеньев в цепи, где замок.
+ */
+const LOCK = { straps: [7, 19], links: 13, lockY: 10.4 } as const;
 function leafLocked(): Model {
   const D = DOORWAY, z = -D.recess + 2.5, parts: Part[] = [], marks: Mark[] = [];
   parts.push(box([0, D.apex / 2, z], [D.half, D.apex / 2, 0.6], (s) => {
     const x = s.x * D.half, y = D.apex / 2 + (s.y * D.apex) / 2;
     if (!inLeaf(x, y)) return null;
-    if (Math.abs(x) < 0.45) return H.oakDark;
-    if (Math.abs(y - 7) < 0.8 || Math.abs(y - 19) < 0.8) return H.iron;
-    return (x + D.half) % 4 < 0.35 ? H.oakDark : Math.floor((x + D.half) / 4) % 2 ? H.oak : ramp('#76523a');
+    const plank = Math.floor((x + D.half) / 4), u = (x + D.half) % 4;
+    if (Math.abs(x) < 0.45 || u < 0.35) return H.oakDark;
+    // волокна: тонкие волнистые линии вдоль доски, у каждой доски свой рисунок
+    if ((u + Math.sin(y * 0.25 + plank * 1.7) * 0.35 + hash(plank, 1, 5)) % 1.35 < 0.14) return H.oakDark;
+    return plank % 2 ? H.oak : ramp('#76523a');
   }));
-  const link = (s: Surface): Shade => (Math.floor((s.y + 1) * 7) % 2 ? H.iron : H.ironLight);
-  parts.push(rod([-9, 21, z + 0.9], [9, 4, z + 0.9], 0.55, link), rod([9, 21, z + 0.9], [-9, 4, z + 0.9], 0.55, link));
-  parts.push(
-    box([0, 10.4, z + 1.7], [2.2, 2.4, 0.9], M.gold),
-    rod([-1.3, 12.6, z + 1.7], [-1.3, 14.4, z + 1.7], 0.45, H.ironLight), rod([1.3, 12.6, z + 1.7], [1.3, 14.4, z + 1.7], 0.45, H.ironLight),
-    rod([-1.3, 14.6, z + 1.7], [1.3, 14.6, z + 1.7], 0.45, H.ironLight),
-  );
-  marks.push({ p: [0, 10.6, z + 2.7], color: '#2a1e14', n: [0, 0, 1] }, { p: [0, 9.8, z + 2.7], color: '#2a1e14', n: [0, 0, 1] });
-  for (const y of [7, 19]) for (const x of [-8, -4, 4, 8]) marks.push({ p: [x, y, z + 0.7], color: '#8a8898', n: [0, 0, 1] });
+  // накладные полосы с клёпками
+  for (const y of LOCK.straps) {
+    parts.push(box([0, y, z + 0.7], [D.half - 0.6, 0.85, 0.3], (s) => (inLeaf(s.x * (D.half - 0.6), y) ? H.iron : null)));
+    for (let x = -D.half + 2; x <= D.half - 2; x += 3.2) parts.push(ball([x, y, z + 1.05], [0.42, 0.42, 0.3], H.ironLight));
+  }
+  // кольцо-ручка справа
+  for (let k = 0; k < 10; k++) {
+    const a = (k / 10) * TAU;
+    parts.push(ball([6.5 + Math.cos(a) * 1.3, 13.6 + Math.sin(a) * 1.3, z + 1.1], [0.38, 0.38, 0.38], H.ironLight));
+  }
+  // цепи накрест: звенья вытянуты вдоль цепи, через одно — повёрнуты ребром
+  const chain = (from: Vec, to: Vec): void => {
+    const d = norm([to[0] - from[0], to[1] - from[1], 0]), across: Vec = [-d[1], d[0], 0];
+    for (let i = 0; i < LOCK.links; i++) {
+      const t = (i + 0.5) / LOCK.links, c: Vec = [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t, z + 1.3];
+      const flatLink = i % 2 === 0, axes: Axes = flatLink ? [d, across, [0, 0, 1]] : [d, [0, 0, 1], across];
+      parts.push(ball(c, [1.05, 0.55, 0.3], (q) => (flatLink && Math.abs(q.y) < 0.35 && Math.abs(q.x) < 0.6 ? null : i % 2 ? H.iron : H.ironLight), axes));
+    }
+  };
+  chain([-9, 21, 0], [9, 4, 0]); chain([9, 21, 0], [-9, 4, 0]);
+  // замок: корпус, дужка из шариков, скважина
+  const L = LOCK.lockY;
+  parts.push(ball([0, L, z + 2], [2.4, 2.6, 1.1], M.gold));
+  for (let k = 0; k <= 8; k++) {
+    const a = (k / 8) * Math.PI;
+    parts.push(ball([Math.cos(a) * 1.5, L + 2 + Math.sin(a) * 1.8, z + 2], [0.42, 0.42, 0.42], H.ironLight));
+  }
+  marks.push({ p: [0, L + 0.3, z + 3.15], color: '#2a1e14', n: [0, 0, 1] }, { p: [0, L - 0.5, z + 3.15], color: '#2a1e14', n: [0, 0, 1] }, { p: [-1.1, L + 1, z + 3], color: '#fff3c0', n: [0, 0, 1] });
   return { parts, marks };
 }
 
@@ -282,26 +326,6 @@ function riftFire(f: number): Model {
   };
 }
 
-/** Чёрное пламя — объёмное: по краю силуэта лиловая кайма, к середине темнее, сердцевина почти чёрная (светится само, без теней). */
-const VIEW_DIR = [Math.sin(CAMERA_PITCH), Math.cos(CAMERA_PITCH)] as const;
-const flamePaint: Paint = (s) => {
-  const d = s.n[1] * VIEW_DIR[0] + s.n[2] * VIEW_DIR[1];   // насколько точка смотрит в камеру
-  return d < 0.45 ? '#c080ff' : d < 0.65 ? '#7a30c0' : d < 0.82 ? '#2a1048' : '#0a0410';
-};
-/** Живой огонь — объёмный: по краю силуэта красная кайма, к середине оранжевый и жёлтый, сердцевина почти белая. */
-const firePaint: Paint = (s) => {
-  const d = s.n[1] * VIEW_DIR[0] + s.n[2] * VIEW_DIR[1];
-  return d < 0.4 ? '#d8401a' : d < 0.62 ? '#ff8a2a' : d < 0.84 ? '#ffc850' : '#fff4c8';
-};
-/** Язык пламени: стопка сжимающихся кверху шаров, верх колышется (phase — фаза колыхания); y0 — где основание. */
-function flameTongue(parts: Part[], x: number, z: number, height: number, width: number, phase: number, paint: Paint = flamePaint, y0 = 3): void {
-  const n = 4;
-  for (let k = 0; k < n; k++) {
-    const t = k / n, r = width * (1 - t * 0.72), sway = Math.sin(phase + t * 3) * 2.2 * t;
-    parts.push(ball([x + sway, y0 + height * t, z], [r, (height / n) * 0.95, r], paint));
-  }
-}
-
 /** Молния: ломаная из точки (x, y) вверх, len колен; seed — какая. Лиловое свечение и белая сердцевина. */
 function bolt(c: CanvasRenderingContext2D, x: number, y: number, len: number, seed: number): void {
   let px = x, py = y;
@@ -350,33 +374,70 @@ const HALL_ARMOR_SCALE = 1.25;
 
 // ---------------- кузня ----------------
 const FURNACE = { w: 112, h: 92, ax: 56, ay: 84, mouth: 12 } as const;
-/**
- * Лава: тёмная остывающая корка неровными плитами (ячейки Вороного), между плитами — раскалённые трещины, у трещин
- * корка рдеет; плиты пульсируют жаром каждая в своей фазе. u, v — координаты по поверхности (единицы модели),
- * t — фаза анимации (0..2π, по кругу без скачка).
- */
-function lavaAt(u: number, v: number, t: number): string {
-  const x = u * 0.2, y = v * 0.42, cx = Math.floor(x), cy = Math.floor(y);
-  let d1 = 9, d2 = 9, id = 0;
-  for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
-    const gx = cx + i, gy = cy + j, d = Math.hypot(x - gx - 0.2 - 0.6 * hash(gx, gy, 13), (y - gy - 0.2 - 0.6 * hash(gx, gy, 17)) * 1.2);
-    if (d < d1) { d2 = d1; d1 = d; id = hash(gx, gy, 3); } else if (d < d2) d2 = d;
+/** Корыто с лавой перед печью: середина по z, полуширина и полуглубина, высота бортика и его толщина, уровень лавы, пузырей. */
+const TROUGH = { z: 10, w: 28, d: 7.5, h: 4.4, kerb: 1.6, lava: 3.2, bubbles: 4 } as const;
+/** Арка устья: камней, их полуширина вдоль дуги и толщина; на сколько дуга шире и выше проёма. */
+const ARCH = { stones: 11, half: 1.4, thick: 1.4, depth: 0.7, out: 1.4 } as const;
+
+/** Клиновидные камни по дуге над устьем (дуга — как у проёма, archTop, только шире): каждый повёрнут поперёк дуги. */
+function furnaceArch(parts: Part[], m: number): void {
+  const half = m + ARCH.out, at = (x: number): Vec => [x, 3.2 + archTop(x, half, 8 + ARCH.out * 0.3, 14 + ARCH.out), -0.6];
+  // точки дуги через равные отрезки длины
+  const samples: Vec[] = [];
+  for (let i = 0; i <= 200; i++) samples.push(at(-half + (i / 200) * 2 * half));
+  const len: number[] = [0];
+  for (let i = 1; i < samples.length; i++) len.push(len[i - 1]! + Math.hypot(samples[i]![0] - samples[i - 1]![0], samples[i]![1] - samples[i - 1]![1]));
+  const total = len[len.length - 1]!;
+  for (let k = 0; k < ARCH.stones; k++) {
+    const want = ((k + 0.5) / ARCH.stones) * total, i = Math.max(1, len.findIndex((l) => l >= want));
+    const a = samples[i - 1]!, b = samples[i]!, tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+    const tan: Vec = [(b[0] - a[0]) / tl, (b[1] - a[1]) / tl, 0], out: Vec = [tan[1], -tan[0], 0];
+    const key = k === (ARCH.stones - 1) / 2;
+    parts.push(box(b, [ARCH.half, ARCH.thick, ARCH.depth], (s) => {
+      if (s.y < -0.6 && !key) return ramp('#a8401e');   // нижняя грань у огня раскалена
+      return key ? M.bronzeLight : s.n[2] > 0.9 && Math.abs(s.x) > 0.85 ? M.stoneDark : k % 2 ? M.stoneLight : M.stone;
+    }, [tan, out[1] < 0 ? mul(out, -1) : out, [0, 0, 1]]));
   }
-  const crack = d2 - d1, heat = 0.5 + 0.5 * Math.sin(t * 2 + id * TAU);
-  if (crack < 0.06) return heat > 0.5 ? '#fff2b0' : '#ffd060';
-  if (crack < 0.14) return heat > 0.4 ? '#ffa030' : '#f07020';
-  if (crack < 0.24) return '#c8401a';
-  return id > 0.7 ? (heat > 0.6 ? '#8a2a14' : '#6a2010') : id > 0.35 ? '#4e1a10' : '#3a140c';
+}
+/** Плавный шум 0..1 (значения в узлах сетки — hash, между ними — сглаженно): разводы лавы и воды без «клеток». */
+function smoothNoise(x: number, y: number, seed: number): number {
+  const xi = Math.floor(x), yi = Math.floor(y), ease = (k: number): number => k * k * (3 - 2 * k);
+  const u = ease(x - xi), v = ease(y - yi);
+  const a = hash(xi, yi, seed), b = hash(xi + 1, yi, seed), c = hash(xi, yi + 1, seed), d = hash(xi + 1, yi + 1, seed);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+/**
+ * Лава в корыте — текучий расплав: тёмные островки остывающей корки с рдеющими краями плывут по оранжевой лаве,
+ * в ней — жёлтые и почти белые раскалённые прожилки. Узор медленно кружит (сдвиг по кругу — цикл без скачка).
+ * u, v — координаты по поверхности (единицы модели), t — фаза анимации (0..2π). Пороги — LAVA.
+ */
+const LAVA = { drift: [1.6, 0.8], crust: 0.6, rim: 0.55, vein: [0.3, 0.52, 0.72] } as const;
+function lavaAt(u: number, v: number, t: number): string {
+  const x = (u + Math.cos(t) * LAVA.drift[0]) * 0.2, y = (v + Math.sin(t) * LAVA.drift[1]) * 0.42;
+  const warp = smoothNoise(x * 1.3 + 7, y * 1.3, 31);
+  const crust = smoothNoise(x + warp * 0.9, y + warp * 0.9, 29), heat = smoothNoise(x * 2.2 - warp * 1.5, y * 2.2 + warp, 37);
+  if (crust > LAVA.crust) return crust > LAVA.crust + 0.06 ? (heat > 0.55 ? '#4e1a10' : '#34120c') : '#a8301a';
+  if (crust > LAVA.rim) return '#e8581a';   // край корки рдеет
+  return heat > LAVA.vein[2] ? '#fff2b0' : heat > LAVA.vein[1] ? '#ffc040' : heat > LAVA.vein[0] ? '#ff8a24' : '#e8581a';
+}
+/** Пузырь лавы: по краю силуэта багровый, к середине жёлтый (светится сам). */
+const lavaBubble: Paint = (q) => {
+  const d = q.n[1] * VIEW_DIR[0] + q.n[2] * VIEW_DIR[1];
+  return d < 0.5 ? '#c8401a' : d < 0.8 ? '#ff8a24' : '#ffd060';
+};
+/** Круглая светящаяся точка поверх модели (искра, капля пара); alpha — прозрачность. */
+function ember(c: CanvasRenderingContext2D, color: string, x: number, y: number, r: number, alpha = 1): void {
+  c.globalAlpha = alpha; c.fillStyle = color; c.beginPath(); c.arc(x, y, r, 0, TAU); c.fill(); c.globalAlpha = 1;
 }
 /** Стекающая лава: светлые и тёмные полосы бегут вниз по струе (y — вдоль струи, t — фаза). */
 function lavaStream(y: number, t: number): string {
   const v = Math.sin(y * 1.6 - t * 2) + 0.4 * Math.sin(y * 3.1 - t * 4);
   return v > 0.9 ? '#fff2b0' : v > 0.2 ? '#ffc040' : v > -0.6 ? '#ff7a20' : '#c83a14';
 }
-/** Раскалённое нутро горна: снизу почти белое, кверху темнеет до багрового; мерцает (k — 0..1). */
+/** Раскалённое нутро горна: у огня оранжевое, дальше темнеет до багрового и почти чёрного — огонь на нём ярче; мерцает (k — 0..1). */
 function forgeGlow(y: number, k: number): string {
-  const h = y / 14 - k * 0.15;
-  return h < 0.15 ? '#fff4c8' : h < 0.35 ? '#ffd060' : h < 0.6 ? '#ff8a2a' : h < 0.85 ? '#d8401a' : '#6a1a10';
+  const h = y / 14 - k * 0.12;
+  return h < 0.2 ? '#ff9a30' : h < 0.4 ? '#d8501a' : h < 0.62 ? '#8a2412' : h < 0.85 ? '#4a160e' : '#26100c';
 }
 
 /**
@@ -396,10 +457,10 @@ function furnace(f: number): Model {
       if (s.n[2] > 0.9 && inMouth(x, y - 3.2)) return null;
       if (s.n[1] > 0.9) return M.brickDark;
       // кирпичи у устья раскалены
-      return s.n[2] > 0.9 && Math.abs(x) < m + 4 && y < 22 && hash(Math.floor(x / 3), Math.floor(y / 2), 11) > 0.6 ? '#a8401e' : brick(s);
+      return s.n[2] > 0.9 && Math.abs(x) < m + 3 && y < 14 && hash(Math.floor(x / 3), Math.floor(y / 2), 11) > 0.7 ? ramp('#7a2e1c') : brick(s);
     }),
-    // нутро: задняя стенка светится, внизу угли
-    box([0, 10, -17], [m, 7.5, 0.6], (s) => forgeGlow((s.y + 1) * 7.5, flicker)),
+    // нутро: задняя стенка светится — ярче всего у огня внизу посередине
+    box([0, 10, -17], [m, 7.5, 0.6], (s) => forgeGlow(Math.hypot(s.x * m * 0.8, (s.y + 1) * 7.5), flicker)),
     box([0, 3.6, -11], [m, 0.4, 6], () => forgeGlow(1, flicker)),
   ];
   for (let i = 0; i < 9; i++) {
@@ -411,22 +472,33 @@ function furnace(f: number): Model {
   for (const [x, ph] of [[-6, 1.7], [6, 3.1], [-9.5, 4.2], [9.5, 5.3]] as const) {
     flameTongue(parts, x, -10, 7 + 2.4 * Math.sin(t * 2 + ph), 3, t + ph, firePaint, 4.6);
   }
-  // арка устья из камней, колпак, дымоход
-  for (let k = 0; k <= 8; k++) {
-    const x = -(m + 2) + (k / 8) * 2 * (m + 2);
-    parts.push(ball([x, 3.2 + archTop(x, m + 2, 8, 16), -0.4], [2.8, 2.4, 1.8], k === 4 ? M.bronzeLight : k % 2 ? M.stoneLight : M.stone));
-  }
+  // арка устья: клиновидные камни по дуге, замковый камень — бронзовый; у нутра камни раскалены
+  furnaceArch(parts, m);
   parts.push(
-    box([0, 33, -12], [30, 6, 8], (s) => (s.y < -0.7 ? M.bronze : s.y < -0.55 ? M.bronzeLight : bricks(M.brick, '#2a1c1c', 4, 9)(s))),
-    box([0, 49, -14], [11, 10, 5], (s) => (s.n[1] > 0.9 ? (Math.abs(s.x) < 0.7 && Math.abs(s.z) < 0.6 ? forgeGlow(10, flicker) : M.brickDark) : bricks(M.brickDark, '#1a1214', 5, 4)(s))),
-    box([0, 59.5, -14], [12, 0.8, 6], M.iron),
+    box([0, 33, -12], [30, 6, 8], (s) => (s.n[1] > 0.9 ? ramp('#3a3236') : s.y < -0.7 ? M.bronze : s.y < -0.55 ? M.bronzeLight : bricks(M.brick, '#2a1c1c', 4, 9)(s))),
+    box([0, 49, -14], [11, 10, 5], (s) => (s.n[1] > 0.9 ? M.brickDark : bricks(M.brickDark, '#1a1214', 5, 4)(s))),
+    // крышка дымохода, в отверстии тлеет отсвет горна
+    box([0, 59.5, -14], [12, 0.8, 6], (s) => {
+      const d = Math.hypot(s.x / 0.5, s.z / 0.6);
+      return s.n[1] < 0.9 || d > 1 ? M.iron : d < 0.35 ? (flicker > 0.5 ? '#ff7a2a' : '#c8401a') : d < 0.65 ? '#5a1a10' : '#1a1012';
+    }),
   );
-  // жёлоб под устьем, струя лавы и корыто с лавой
+  // корыто с лавой: лава ниже каменного бортика, из жёлоба под устьем в неё стекает струя; в лаве надуваются пузыри
+  const T = TROUGH;
   parts.push(
     box([0, 7, 0.2], [3.4, 0.8, 1.8], M.bronze),
-    cyl([0, 6.6, 1.8], [0, 4.4, 5.4], 1.6, (s) => lavaStream((s.y + 1) * 2, t)),
-    box([0, 2.2, 10], [28, 2.2, 7.5], (s) => (s.n[1] > 0.9 && Math.abs(s.x) < 0.94 && Math.abs(s.z) < 0.8 ? lavaAt(s.x * 26, s.z * 6, t) : s.n[1] > 0.9 ? M.stoneLight : M.stone)),
+    cyl([0, 6.6, 1.8], [0, T.lava - 0.2, 5.4], 1.6, (s) => lavaStream((s.y + 1) * 2, t)),
+    box([0, T.lava / 2, T.z], [T.w - T.kerb, T.lava / 2, T.d - T.kerb], (s) => (s.n[1] > 0.9 ? lavaAt(s.x * (T.w - T.kerb), s.z * (T.d - T.kerb), t) : M.stoneDark)),
   );
+  const kerb: Paint = (s) => (s.n[1] > 0.9 ? M.stoneLight : M.stone);
+  for (const side of [-1, 1]) {
+    parts.push(box([0, T.h / 2, T.z + side * (T.d - T.kerb / 2)], [T.w, T.h / 2, T.kerb / 2], kerb));
+    parts.push(box([side * (T.w - T.kerb / 2), T.h / 2, T.z], [T.kerb / 2, T.h / 2, T.d - T.kerb], kerb));
+  }
+  for (let i = 0; i < T.bubbles; i++) {
+    const k = (p * 2 + i / T.bubbles) % 1, r = 0.5 + k * 1.6;
+    if (k < 0.9) parts.push(ball([-18 + i * 12 + hash(i, 1, 41) * 6, T.lava + r * 0.35, T.z + (hash(i, 2, 41) - 0.5) * 6], [r, r * 0.75, r], lavaBubble));
+  }
   // мехи слева, ведро угля и клещи справа
   parts.push(
     box([-41, 5, 0], [5, 2.6, 7], (s) => (Math.abs(s.y) < 0.6 ? (Math.floor((s.z + 1) * 5) % 2 ? H.leather : ramp('#4a2e1c')) : H.oak), tilt(0.25)),
@@ -438,11 +510,11 @@ function furnace(f: number): Model {
   return {
     parts,
     overlay: (c) => {
-      // искры над дымоходом и над корытом с лавой
+      // искры над дымоходом и над корытом с лавой — круглые, гаснут на лету
       for (let i = 0; i < 5; i++) {
         const k = (p + i / 5) % 1;
-        dot(c, k < 0.5 ? '#ffd060' : '#ff8a2a', FURNACE.ax - 6 + i * 3 + Math.sin(k * TAU + i) * 2, FURNACE.ay - 74 - k * 14, 0.5, 0.5);
-        dot(c, k < 0.4 ? '#fff0a0' : '#ff7a2a', FURNACE.ax - 20 + i * 10, FURNACE.ay - 6 - k * 10, 0.5, 0.5);
+        ember(c, k < 0.5 ? '#ffd060' : '#ff8a2a', FURNACE.ax - 6 + i * 3 + Math.sin(k * TAU + i) * 2, FURNACE.ay - 74 - k * 14, 0.4, 1 - k * 0.7);
+        ember(c, k < 0.4 ? '#fff0a0' : '#ff7a2a', FURNACE.ax - 20 + i * 10, FURNACE.ay - 6 - k * 10, 0.35, 1 - k * 0.7);
       }
     },
   };
@@ -651,21 +723,41 @@ function barrel(parts: Part[], x: number, z: number, r: number, h: number, top: 
   }));
 }
 
-/** Бочка для закалки: вода с рябью, на краю клещи и остывающий клинок; над водой поднимается пар. */
+/**
+ * Бочка для закалки: у бочки видна толщина края и тёмная внутренняя стенка, вода ниже края — глубже к дальней стороне,
+ * с бликом и расходящимися кругами ряби оттуда, где в воду опущен раскалённый клинок (кончик рдеет); над водой — пар.
+ * WATER: где край и внутренняя стенка (доли радиуса), насколько глубоко видна стенка, откуда круги ряби.
+ */
 const QUENCH = { w: 36, h: 40, ax: 18, ay: 34 } as const;
+const WATER = { rim: 0.86, inner: 0.8, depth: 0.16, drop: [0.22, 0.18], rings: 2 } as const;
 function quench(f: number): Model {
-  const p = f / HALL_ANIM.quench.frames, t = p * TAU, parts: Part[] = [];
-  barrel(parts, 0, 0, 7, 11, (s) => (Math.hypot(s.x, s.z) > 0.86 ? ramp('#7a5638') : Math.sin(Math.hypot(s.x, s.z) * 14 - t * 2) > 0.6 ? ramp('#6ab0d0') : M.water));
+  const p = f / HALL_ANIM.quench.frames, parts: Part[] = [];
+  // крышка цилиндра не знает, где на ней точка (раскраске приходит нормаль) — вода отдельным тонким диском поверх бочки
+  barrel(parts, 0, 0, 7, 11, () => '#3e2818');
+  parts.push(ball([0, 11.02, 0], [7, 0.05, 7], (s) => {
+    const r = Math.hypot(s.x, s.z);
+    if (r > WATER.rim) return ramp('#8a6440');   // торец досок
+    if (r > WATER.inner - Math.max(0, -s.z) * WATER.depth) return '#3e2818';   // внутренняя стенка над водой (видна с дальней стороны)
+    const d = Math.hypot(s.x - WATER.drop[0], s.z - WATER.drop[1]);
+    if (d < 0.75 && ((d * 5 - p * WATER.rings) % 1 + 1) % 1 < 0.09) return '#a8dcee';   // круги ряби
+    if (Math.abs(s.x + s.z * 0.6 + 0.3) < 0.05 && r < 0.6) return '#d8f2fa';   // блик
+    const deep = smoothNoise(s.x * 3 + 4, s.z * 3, 43) * 0.3 - s.z * 0.5;
+    return deep > 0.35 ? '#1c4660' : deep > 0.05 ? '#24587a' : '#2e6c90';
+  }));
+  // клинок опущен в воду (что ниже воды — скрыто): кончик у воды рдеет, гарда и рукоять над бочкой
+  const lean = roll(-0.3);
   parts.push(
-    rod([4, 11, -3], [9, 4, 3], 0.45, H.ironLight), rod([4.6, 11, -2.6], [9.4, 4.4, 3.2], 0.45, H.ironLight),
-    box([-3, 11.3, 2], [3.4, 0.25, 0.6], M.steel),
+    box([2.6, 13.6, 1.2], [0.5, 3.2, 0.16], (s) => (s.y < -0.55 ? '#ffb040' : s.y < -0.2 ? '#e8602a' : M.steel), lean),
+    box([3.6, 16.9, 1.2], [1.9, 0.35, 0.5], M.gold, lean), rod([3.8, 17.2, 1.2], [4.6, 19.6, 1.2], 0.45, H.leather),
+    rod([-4, 11, -3], [-9, 4, 3], 0.45, H.ironLight), rod([-4.6, 11, -2.6], [-9.4, 4.4, 3.2], 0.45, H.ironLight),
   );
   return {
     parts,
     overlay: (c) => {
-      for (let i = 0; i < 4; i++) {
-        const k = (p + i / 4) % 1;
-        dot(c, '#e4ecf2', QUENCH.ax - 4 + i * 3 + Math.sin(k * TAU + i) * 2, QUENCH.ay - 16 - k * 14, 1 - k * 0.5, 1 - k * 0.5);
+      // пар клубится от клинка вверх, расплывается и тает
+      for (let i = 0; i < 5; i++) {
+        const k = (p + i / 5) % 1;
+        ember(c, '#e4ecf2', QUENCH.ax + 2 + Math.sin(k * TAU + i) * 2 + k * 2, QUENCH.ay - 12 - k * 14, 0.8 + k * 1.8, 0.55 * (1 - k));
       }
     },
   };

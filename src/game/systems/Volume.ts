@@ -32,6 +32,38 @@ export function ramp(base: string): Ramp {
   if (!r) { r = [tone(base, 0.55), tone(base, 0.25), base, tone(base, -0.3), tone(base, -0.6)]; rampCache.set(base, r); }
   return r;
 }
+const toneRgb = new Map<string, number>();
+function hexRgb(hex: string): number {
+  let v = toneRgb.get(hex);
+  if (v === undefined) { v = parseInt(hex.slice(1, 7), 16); toneRgb.set(hex, v); }
+  return v;
+}
+/**
+ * Ступенчатая светотень (cel): 4 чёткие ступени тона по свету (CEL_AT — где на шкале света граница ступени), резкий блик
+ * там, где свет отражается в камеру (SPECULAR), контровой свет по краю на теневой стороне — отделяет тёмное от тёмного
+ * фона (RIM), вертикальный градиент — вверху светлее, у основания темнее и у самого пола ещё темнее (GROUND).
+ * height — высота точки над полом (единицы модели), null — без градиента (кромки стен, вид строго сверху).
+ */
+const CEL_AT = [0.75, 0.45, 0.15] as const;
+const SPECULAR = 0.93;
+const RIM = { edge: 0.35, light: 0.35, color: 0xa8b8e8, mix: 0.4 } as const;
+const GROUND = { min: 0.82, max: 1.08, perUnit: 0.012, contact: 1.5, ao: 0.85 } as const;
+export function litCel(tones: Ramp, nx: number, ny: number, nz: number, height: number | null): number {
+  const d = nx * LIGHT_DIR.x + ny * LIGHT_DIR.y + nz * LIGHT_DIR.z;
+  const spec = 2 * d * nz - LIGHT_DIR.z;
+  let c = hexRgb(tones[spec > SPECULAR ? 0 : d > CEL_AT[0] ? 1 : d > CEL_AT[1] ? 2 : d > CEL_AT[2] ? 3 : 4]);
+  if (nz < RIM.edge && d < RIM.light) c = mixRgb(c, RIM.color, RIM.mix);
+  if (height === null) return c;
+  let k = Math.max(GROUND.min, Math.min(GROUND.max, GROUND.min + height * GROUND.perUnit));
+  if (height < GROUND.contact) k *= GROUND.ao;
+  const ch = (sh: number): number => Math.min(255, Math.round(((c >> sh) & 255) * k)) << sh;
+  return ch(16) | ch(8) | ch(0);
+}
+function mixRgb(a: number, b: number, f: number): number {
+  const ch = (sh: number): number => Math.round(((a >> sh) & 255) * (1 - f) + ((b >> sh) & 255) * f) << sh;
+  return ch(16) | ch(8) | ch(0);
+}
+
 /** Номер ступени тона для нормали (nx, ny, nz): чем больше света падает, тем светлее. */
 export function lit(nx: number, ny: number, nz: number): number {
   const d = nx * LIGHT_DIR.x + ny * LIGHT_DIR.y + nz * LIGHT_DIR.z;

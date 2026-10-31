@@ -2,7 +2,7 @@ import Phaser from 'phaser';
 import { TEXTURES } from '../configs/assets';
 import { DEPTH, GAME } from '../configs/game';
 import type { Colliders } from './Colliders';
-import { ball, box, cyl, drawModelJobs, hash, hiresTextureJobs, propTextureJobs, readableCanvas, stoneAt, yaw, type Masonry, type Model } from './CastleModels';
+import { ball, box, cyl, drawModelJobs, hash, hiresTextureJobs, propTextureJobs, readableCanvas, stoneAt, textureResolution, yaw, type Masonry, type Model } from './CastleModels';
 import { CAMERA_PITCH, type Mark, type Part, type Shade } from './Rig3D';
 import { addOutline, addVolume, ramp, roundCorners, tone } from './Volume';
 
@@ -18,15 +18,16 @@ export type CastleTheme = 'hall' | 'courtyard' | 'crypt' | 'forge' | 'smithy' | 
 export const CASTLE_BOUNDS = { side: 8, top: 88, bottom: 24 } as const;
 /** Четыре стены у всех карт (зал, его комнаты, арены): толщина боковой стены — она же граница по бокам. */
 export const ROOM_BOUNDS = { ...CASTLE_BOUNDS, side: 28 } as const;
-/** Разлом Бездны на полу арены (снизу посередине, up — от нижнего края карты): здесь герой приходит и уходит в замок. */
-export const ARENA_RIFT = { up: 80, r: 26 } as const;
+/** Разлом Бездны на полу арены (снизу посередине, up — от нижнего края карты): здесь герой приходит и уходит в замок (модель — ARENA_RIFTS.exit). */
+export const ARENA_RIFT = { up: 80 } as const;
 /** Круг ристалища на полу арены: середина (от середины карты вниз) и полуоси — выше разлома, не задевает его. */
 const ARENA_RING = { dy: 0, rx: 170, ry: 110 } as const;
 /**
  * Мягкость пола: шов между плитами — тон плиты темнее на столько (а не почти чёрный), доля плит с трещиной
  * и с камешком, прозрачность трещин. Мелкие контрастные штрихи на каждой плите заставляли пол рябить.
+ * engraved — доля резных плит (круг с крестом, вырезанные в камне).
  */
-const FLOOR_SOFT = { joint: -0.32, cracks: 0.12, pebbles: 0.06, crackAlpha: '40' } as const;
+const FLOOR_SOFT = { joint: -0.32, cracks: 0.12, pebbles: 0.06, crackAlpha: '40', engraved: 0.05 } as const;
 /** Размеры карт: зал замка, арена и комната зала (пол рисуется заранее, при загрузке). */
 export const HALL_SIZE = { w: 640, h: 496 } as const;
 /** Арена просторная: на дальних волнах врагов много. */
@@ -84,8 +85,12 @@ export function poly(c: CanvasRenderingContext2D, color: string, points: number[
   points.forEach(([x, y], i) => i ? c.lineTo(x!, y!) : c.moveTo(x!, y!));
   c.closePath(); c.fill();
 }
-/** volume — наложить светотень и контур (см. Volume.ts); для объектов да, для пола и иконок нет. */
-export function texture(scene: Phaser.Scene, key: string, w: number, h: number, paint: Paint2D, volume = false): void {
+/**
+ * volume — наложить светотень и контур (см. Volume.ts); для объектов да, для пола и иконок нет.
+ * hd — рисовать в GAME.resolution раз детальнее со сглаживанием (как hdTexture); показывать с масштабом 1 / textureResolution.
+ */
+export function texture(scene: Phaser.Scene, key: string, w: number, h: number, paint: Paint2D, volume = false, hd = false): void {
+  if (hd) { hdTexture(scene, key, w, h, paint); return; }
   if (scene.textures.exists(key)) scene.textures.remove(key);
   const tex = readableCanvas(scene, key, w, h);
   if (!tex) return;
@@ -94,6 +99,75 @@ export function texture(scene: Phaser.Scene, key: string, w: number, h: number, 
   if (volume) { roundCorners(ctx, w, h, w, h); addVolume(ctx, w, h, w, h); addOutline(ctx, w, h, w, h); }
   tex.refresh(); tex.setFilter(Phaser.Textures.FilterMode.NEAREST);
 }
+/**
+ * HD-текстура (пол): рисуется в координатах игры, но на холсте в GAME.resolution раз детальнее и со сглаживанием —
+ * линии и пятна гладкие, без пиксельных ступенек. Показывать с масштабом 1 / GAME.resolution.
+ */
+function hdTexture(scene: Phaser.Scene, key: string, w: number, h: number, paint: Paint2D, R: number = GAME.resolution): void {
+  if (scene.textures.exists(key)) scene.textures.remove(key);
+  const tex = readableCanvas(scene, key, w * R, h * R);
+  if (!tex) return;
+  const ctx = tex.getContext();
+  ctx.imageSmoothingEnabled = true;
+  ctx.scale(R, R);
+  paint(ctx);
+  (tex.customData as { resolution?: number }).resolution = R;
+  tex.refresh(); tex.setFilter(Phaser.Textures.FilterMode.LINEAR);
+}
+/** Гладкий эллипс (HD): пятна копоти, мха, тьма разлома. */
+function softEllipse(c: CanvasRenderingContext2D, color: string, cx: number, cy: number, rx: number, ry: number, angle = 0): void {
+  c.fillStyle = color; c.beginPath(); c.ellipse(cx, cy, rx, ry, angle, 0, Math.PI * 2); c.fill();
+}
+/** Гладкая ломаная (HD): трещины. */
+function strokePath(c: CanvasRenderingContext2D, color: string, width: number, pts: readonly (readonly [number, number])[]): void {
+  c.strokeStyle = color; c.lineWidth = width; c.lineCap = 'round'; c.lineJoin = 'round';
+  c.beginPath(); pts.forEach(([x, y], i) => (i ? c.lineTo(x, y) : c.moveTo(x, y))); c.stroke();
+}
+
+/**
+ * Плита пола (HD): шов тоньше пикселя, мягкая фаска (свет сверху-слева, тень снизу-справа), каменная крошка,
+ * иногда тонкая трещина, пятна мха у нижнего края или камешек. Всё случайное — по hash от места плиты (x, y).
+ */
+const TILE = { w: 32, h: 16, joint: 0.6, specks: 10 } as const;
+function paintTile(c: CanvasRenderingContext2D, x: number, y: number, base: string, hx: number, hy: number, p: Palette): void {
+  const j = TILE.joint / 2, w = TILE.w - TILE.joint, h = TILE.h - TILE.joint, x0 = x + j, y0 = y + j;
+  // ступенчатая фаска (cel): светлая полоса сверху и слева, тёмная снизу и справа — без размытого градиента
+  c.fillStyle = base; c.fillRect(x0, y0, w, h);
+  c.fillStyle = tone(base, 0.1); c.fillRect(x0, y0, w, 1.4); c.fillRect(x0, y0, 1.2, h);
+  c.fillStyle = tone(base, -0.18); c.fillRect(x0, y0 + h - 1.6, w, 1.6); c.fillRect(x0 + w - 1.3, y0, 1.3, h);
+  for (let i = 0; i < TILE.specks; i++) {
+    const sx = x0 + 1 + hash2(hx, hy, 200 + i) * (w - 2), sy = y0 + 1 + hash2(hx, hy, 300 + i) * (h - 2), light = hash2(hx, hy, 400 + i) > 0.5;
+    softEllipse(c, light ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.12)', sx, sy, 0.3 + hash2(hx, hy, 500 + i) * 0.6, 0.25 + hash2(hx, hy, 600 + i) * 0.4);
+  }
+  c.fillStyle = 'rgba(255, 255, 255, 0.11)'; c.fillRect(x0, y0, w, 0.35); c.fillRect(x0, y0, 0.35, h);
+  c.fillStyle = 'rgba(0, 0, 0, 0.24)'; c.fillRect(x0, y0 + h - 0.45, w, 0.45); c.fillRect(x0 + w - 0.4, y0, 0.4, h);
+  // сколы на углах плиты
+  for (const [cx, cy, sx, sy] of [[x0, y0, 1, 1], [x0 + w, y0 + h, -1, -1]] as const) {
+    if (hash2(hx + cx, hy, 61) > 0.6) poly(c, tone(p.floor[0], FLOOR_SOFT.joint), [[cx, cy], [cx + sx * 2.2, cy], [cx, cy + sy * 1.6]]);
+  }
+  // резная плита: круг с крестом, вырезанный в камне (тёмная борозда, под ней светлый край)
+  if (hash2(hx, hy, 33) > 1 - FLOOR_SOFT.engraved) {
+    const ex = x0 + w / 2, ey = y0 + h / 2;
+    for (const [color, dy] of [[tone(base, 0.18), 0.35], [tone(base, -0.35), 0]] as const) {
+      c.strokeStyle = color; c.lineWidth = 0.55;
+      c.beginPath(); c.ellipse(ex, ey + dy, 5, 3.6, 0, 0, Math.PI * 2); c.stroke();
+      c.beginPath(); c.moveTo(ex - 3.2, ey + dy); c.lineTo(ex + 3.2, ey + dy); c.moveTo(ex, ey - 2.4 + dy); c.lineTo(ex, ey + 2.4 + dy); c.stroke();
+    }
+  }
+  if (hash2(hx, hy, 91) > 1 - FLOOR_SOFT.cracks) {
+    const pts: [number, number][] = [[x0 + 6 + hash2(hx, hy, 92) * 14, y0 + 3 + hash2(hx, hy, 93) * 4]];
+    for (let i = 0; i < 4; i++) { const [px0, py0] = pts[pts.length - 1]!; pts.push([px0 + 1.5 + hash2(hx, hy, 94 + i) * 3, py0 + (hash2(hx, hy, 98 + i) - 0.3) * 3]); }
+    strokePath(c, `${tone(p.floor[0], -0.55)}${FLOOR_SOFT.crackAlpha}`, 0.45, pts);
+  }
+  if (hash2(hx, hy, 17) > 0.85) for (let i = 0; i < 4; i++) {
+    softEllipse(c, i % 2 ? 'rgba(90, 122, 76, 0.35)' : 'rgba(79, 106, 72, 0.3)', x0 + 3 + hash2(hx, hy, i + 30) * (w - 6), y0 + h - 2 - hash2(hx, hy, i + 40) * 2, 0.9 + hash2(hx, hy, i + 50), 0.6);
+  }
+  if (hash2(hx, hy, 53) > 1 - FLOOR_SOFT.pebbles) {
+    softEllipse(c, tone(p.floor[0], -0.3), x0 + 21, y0 + 9.5, 1.3, 0.7);
+    softEllipse(c, `${tone(p.floor[0], 0.3)}aa`, x0 + 20.7, y0 + 9.1, 0.6, 0.3);
+  }
+}
+
 function shield(c: CanvasRenderingContext2D, x: number, y: number, color = '#823749'): void {
   poly(c, '#d6b66d', [[x, y], [x + 18, y], [x + 18, y + 14], [x + 9, y + 22], [x, y + 14]]);
   poly(c, color, [[x + 2, y + 2], [x + 16, y + 2], [x + 16, y + 13], [x + 9, y + 19], [x + 2, y + 13]]);
@@ -122,13 +196,18 @@ type SheetPaint = (c: CanvasRenderingContext2D, f: number) => void;
  * Плоский лист анимации по частям (заставка): первое задание создаёт холст, каждое следующее рисует и оттеняет
  * несколько кадров, последнее регистрирует кадры и анимацию (ключ анимации = ключ текстуры).
  * shading — светотень и контур (огню и вспышкам не нужны), repeat — −1 по кругу, 0 — один раз (эффекты).
+ * hd — кадры рисуются в координатах игры, но в GAME.resolution раз детальнее и со сглаживанием (эффекты HD);
+ * такой лист показывают с масштабом 1 / textureResolution.
  */
-export function sheetJobs(scene: Phaser.Scene, key: string, w: number, h: number, frames: number, frameRate: number, paint: SheetPaint, shading = true, repeat = -1): (() => void)[] {
+export function sheetJobs(scene: Phaser.Scene, key: string, w: number, h: number, frames: number, frameRate: number, paint: SheetPaint, shading = true, repeat = -1, hd = false): (() => void)[] {
   let tex: Phaser.Textures.CanvasTexture | null = null;
+  const R = hd ? GAME.resolution : 1;
   const jobs: (() => void)[] = [() => {
     if (scene.textures.exists(key)) scene.textures.remove(key);
-    tex = readableCanvas(scene, key, w * frames, h);
-    if (tex) tex.getContext().imageSmoothingEnabled = false;
+    tex = readableCanvas(scene, key, w * frames * R, h * R);
+    if (!tex) return;
+    tex.getContext().imageSmoothingEnabled = hd;
+    if (hd) (tex.customData as { resolution?: number }).resolution = R;
   }];
   for (let f0 = 0; f0 < frames; f0 += FRAMES_PER_JOB) {
     jobs.push(() => {
@@ -136,7 +215,7 @@ export function sheetJobs(scene: Phaser.Scene, key: string, w: number, h: number
       const ctx = tex.getContext();
       const f1 = Math.min(frames, f0 + FRAMES_PER_JOB);
       for (let f = f0; f < f1; f++) {
-        ctx.save(); ctx.translate(f * w, 0);
+        ctx.save(); ctx.translate(f * w * R, 0); ctx.scale(R, R);
         ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.clip();
         paint(ctx, f);
         ctx.restore();
@@ -149,8 +228,8 @@ export function sheetJobs(scene: Phaser.Scene, key: string, w: number, h: number
   }
   jobs.push(() => {
     if (!tex) return;
-    tex.refresh(); tex.setFilter(Phaser.Textures.FilterMode.NEAREST);
-    for (let f = 0; f < frames; f++) tex.add(String(f), 0, f * w, 0, w, h);
+    tex.refresh(); tex.setFilter(hd ? Phaser.Textures.FilterMode.LINEAR : Phaser.Textures.FilterMode.NEAREST);
+    for (let f = 0; f < frames; f++) tex.add(String(f), 0, f * w * R, 0, w * R, h * R);
     if (scene.anims.exists(key)) scene.anims.remove(key);
     scene.anims.create({ key, frames: Array.from({ length: frames }, (_, f) => ({ key, frame: String(f) })), frameRate, repeat });
   });
@@ -158,8 +237,8 @@ export function sheetJobs(scene: Phaser.Scene, key: string, w: number, h: number
 }
 
 /** Лист анимации целиком, сразу (когда плавность загрузки не важна). */
-export function sheet(scene: Phaser.Scene, key: string, w: number, h: number, frames: number, frameRate: number, paint: SheetPaint, shading = true): void {
-  for (const job of sheetJobs(scene, key, w, h, frames, frameRate, paint, shading)) job();
+export function sheet(scene: Phaser.Scene, key: string, w: number, h: number, frames: number, frameRate: number, paint: SheetPaint, shading = true, repeat = -1, hd = false): void {
+  for (const job of sheetJobs(scene, key, w, h, frames, frameRate, paint, shading, repeat, hd)) job();
 }
 
 /** Объекты замка (3D-модели) — по заданиям: экран загрузки выполняет их понемногу за кадр, и анимация не подвисает. */
@@ -169,21 +248,16 @@ export function castleTextureJobs(scene: Phaser.Scene): (() => void)[] { return 
 const hash2 = hash;
 
 // ---------------- пол ----------------
+/** Детальность HD-текстуры пола: крупные плиты не требуют больше, а пол арены 800x512 при 4 весил бы 26 МБ. */
+const FLOOR_RES = 3;
 /** Пол: плиты с фаской, трещинами и мхом, ковёр (в зале) или круг арены, герб, тени от стен. Одна плоская текстура на тему. */
 function paintFloor(scene: Phaser.Scene, key: string, w: number, h: number, theme: CastleTheme): void {
   const p = PALETTES[theme];
-  texture(scene, key, w, h, (c) => {
+  hdTexture(scene, key, w, h, (c) => {
     rect(c, tone(p.floor[0], FLOOR_SOFT.joint), 0, 0, w, h);
-    for (let y = 80; y < h; y += 16) for (let x = 0; x < w + 32; x += 32) {
-      const tx = x - (Math.floor(y / 16) % 2) * 16;
-      const shade = Math.floor(hash2(x, y, 73) * p.floor.length);
-      rect(c, p.floor[shade]!, tx, y, 31, 15);
-      rect(c, '#ffffff10', tx, y, 30, 1); rect(c, '#ffffff08', tx, y + 1, 1, 13);
-      rect(c, '#00000026', tx + 1, y + 14, 30, 1); rect(c, '#0000001c', tx + 30, y + 1, 1, 13);
-      const crack = `${tone(p.floor[0], -0.5)}${FLOOR_SOFT.crackAlpha}`;
-      if (hash2(x, y, 91) > 1 - FLOOR_SOFT.cracks) { rect(c, crack, tx + 10, y + 6, 5, 1); rect(c, crack, tx + 15, y + 7, 1, 3); px(c, crack, tx + 16, y + 10); }
-      if (hash2(x, y, 17) > 0.85) for (let i = 0; i < 5; i++) px(c, i % 2 ? '#5a7a4c88' : '#4f6a4888', tx + 2 + Math.floor(hash2(x, y, i + 30) * 26), y + 11 + (i % 3));
-      if (hash2(x, y, 53) > 1 - FLOOR_SOFT.pebbles) { rect(c, `${tone(p.floor[0], -0.3)}`, tx + 20, y + 9, 2, 1); px(c, `${tone(p.floor[0], 0.25)}`, tx + 20, y + 8); }
+    for (let y = 80; y < h; y += TILE.h) for (let x = 0; x < w + TILE.w; x += TILE.w) {
+      const tx = x - (Math.floor(y / TILE.h) % 2) * (TILE.w / 2);
+      paintTile(c, tx, y, p.floor[Math.floor(hash2(x, y, 73) * p.floor.length)]!, x, y, p);
     }
     if (theme === 'hall') {
       paintCarpet(c, w / 2, HALL_FIRE.y - HALL_FIRE.rift + 6, p);
@@ -206,28 +280,34 @@ function paintFloor(scene: Phaser.Scene, key: string, w: number, h: number, them
       }
     }
     if (theme === 'hall') shield(c, w / 2 - 9, 140, p.cloth);
-    else { shield(c, w / 2 - 9, h / 2 - 12, p.cloth); paintRift(c, w / 2, h - ARENA_RIFT.up, ARENA_RIFT.r); }
+    else shield(c, w / 2 - 9, h / 2 - 12, p.cloth);   // разлом-выход — 3D-модель (ARENA_RIFTS.exit), ставится сценой
     edgeShade(c, w, h);
     paintWallShadows(c, w, h);
-  });
+  }, FLOOR_RES);
 }
 
 /** Тени стен на полу: чёткая полоса под задней стеной; у боковых стен — справа от левой шире, слева от правой уже. */
 const WALL_SHADOW = { back: 12, left: 9, right: 4, alpha: 0.42, fade: 3 } as const;
 function paintWallShadows(c: CanvasRenderingContext2D, w: number, h: number): void {
-  const S = WALL_SHADOW, top = WALL.floorY, band = (x: number, y: number, bw: number, bh: number, a: number): void => rect(c, `rgba(6, 8, 16, ${a})`, x, y, bw, bh);
-  band(0, top, w, S.back, S.alpha);
-  band(0, top + S.back, w, S.fade, S.alpha * 0.4);
+  // чёткая тень, за ней — плавный спад (HD: градиент вместо полоски)
+  const S = WALL_SHADOW, top = WALL.floorY, dark = `rgba(6, 8, 16, ${S.alpha})`, clear = 'rgba(6, 8, 16, 0)';
+  const fade = (x0: number, y0: number, x1: number, y1: number, from: string): CanvasGradient => {
+    const g = c.createLinearGradient(x0, y0, x1, y1); g.addColorStop(0, from); g.addColorStop(1, clear); return g;
+  };
+  rect(c, dark, 0, top, w, S.back);
+  c.fillStyle = fade(0, top + S.back, 0, top + S.back + S.fade * 2, dark); c.fillRect(0, top + S.back, w, S.fade * 2);
   const side = ROOM_BOUNDS.side, y0 = top + S.back, len = h - WALL.front.h - y0;
-  band(side, y0, S.left, len, S.alpha);
-  band(side + S.left, y0, S.fade, len, S.alpha * 0.4);
-  band(w - side - S.right, y0, S.right, len, S.alpha * 0.6);
+  rect(c, dark, side, y0, S.left, len);
+  c.fillStyle = fade(side + S.left, 0, side + S.left + S.fade * 2, 0, dark); c.fillRect(side + S.left, y0, S.fade * 2, len);
+  c.fillStyle = fade(w - side, 0, w - side - S.right * 2, 0, `rgba(6, 8, 16, ${S.alpha * 0.6})`); c.fillRect(w - side - S.right * 2, y0, S.right * 2, len);
 }
 
 /** Мягкое затемнение пола у нижней стены. */
 function edgeShade(c: CanvasRenderingContext2D, w: number, h: number): void {
   const frontY = h - WALL.front.h + WALL.front.top;
-  for (let i = 0; i < 12; i++) rect(c, `rgba(8, 10, 18, ${(12 - i) * 0.022})`, 0, frontY - 1 - i, w, 1);
+  const g = c.createLinearGradient(0, frontY, 0, frontY - 12);
+  g.addColorStop(0, 'rgba(8, 10, 18, 0.26)'); g.addColorStop(1, 'rgba(8, 10, 18, 0)');
+  c.fillStyle = g; c.fillRect(0, frontY - 12, w, 12);
 }
 
 /** Ковёр от трона: кайма, золотые полосы и ромбы, тень у трона; внизу — бахрома (до разлома). */
@@ -251,24 +331,34 @@ function paintCarpet(c: CanvasRenderingContext2D, cx: number, end: number, p: Pa
  * в глубине, осколки плит. Рисуется в пол один раз (свет и искры — в сцене).
  */
 function paintRift(c: CanvasRenderingContext2D, cx: number, cy: number, r: number): void {
-  for (let k = 8; k >= 1; k--) ellipse(c, `rgba(6, 3, 12, ${0.07 + (8 - k) * 0.025})`, cx, cy, (r * k) / 8, ((r * k) / 8) * 0.62);
+  // опалённое пятно: тьма к середине (эллипс — круг на полу в 3/4)
+  c.save(); c.translate(cx, cy); c.scale(1, 0.62);
+  const burn = c.createRadialGradient(0, 0, 0, 0, 0, r);
+  burn.addColorStop(0, 'rgba(6, 3, 12, 0.85)'); burn.addColorStop(0.55, 'rgba(6, 3, 12, 0.4)'); burn.addColorStop(1, 'rgba(6, 3, 12, 0)');
+  c.fillStyle = burn; c.beginPath(); c.arc(0, 0, r, 0, Math.PI * 2); c.fill(); c.restore();
+  // рваные трещины: тёмный край и лиловый свет в глубине (светится)
   for (let i = 0; i < 9; i++) {
     let a = (i / 9) * Math.PI * 2 + hash2(i, 1, 71) * 0.5, x = cx, y = cy;
-    const len = r * (0.7 + hash2(i, 2, 71) * 0.5);
+    const len = r * (0.7 + hash2(i, 2, 71) * 0.5), pts: [number, number][] = [[x, y]];
     for (let d = 0; d < len; d += 2) {
       a += (hash2(i, d, 73) - 0.5) * 0.7;
       x += Math.cos(a) * 2; y += Math.sin(a) * 2 * 0.62;
-      const wide = d < len * 0.5 ? 2 : 1;
-      rect(c, '#07040c', Math.round(x) - 1, Math.round(y), wide + 1, 1);
-      px(c, d < len * 0.35 ? '#c080ff' : '#7a2ac0', Math.round(x), Math.round(y));
+      pts.push([x, y]);
     }
+    strokePath(c, '#07040c', 1.8, pts);
+    c.save(); c.shadowColor = '#a050ff'; c.shadowBlur = 3;
+    strokePath(c, '#9a4ae0', 0.7, pts);
+    strokePath(c, '#d8b0ff', 0.35, pts.slice(0, Math.ceil(pts.length * 0.4)));
+    c.restore();
   }
+  // осколки плит
   for (let i = 0; i < 14; i++) {
     const a = hash2(i, 3, 79) * Math.PI * 2, d = r * (0.3 + hash2(i, 4, 79) * 0.7);
-    const x = Math.round(cx + Math.cos(a) * d), y = Math.round(cy + Math.sin(a) * d * 0.62);
-    rect(c, '#2a2836', x, y, 2, 1); px(c, '#5a5868', x, y - 1);
+    const x = cx + Math.cos(a) * d, y = cy + Math.sin(a) * d * 0.62, s = 0.8 + hash2(i, 5, 79) * 1.2;
+    poly(c, '#2a2836', [[x - s, y], [x + s * 0.6, y - s * 0.7], [x + s, y + s * 0.3], [x - s * 0.2, y + s * 0.7]]);
+    softEllipse(c, 'rgba(120, 118, 140, 0.5)', x - s * 0.2, y - s * 0.3, s * 0.4, s * 0.2);
   }
-  ellipse(c, '#05030a', cx, cy, 11, 6);
+  softEllipse(c, '#05030a', cx, cy, 11, 6);
 }
 
 /** Пол комнаты зала: в кузне — копоть и тлеющие угли, в целебнице — листья и пятна зелий. */
@@ -277,17 +367,17 @@ function paintRoomFloor(c: CanvasRenderingContext2D, w: number, h: number, theme
   if (theme === 'smithy') {
     for (let i = 0; i < 26; i++) {
       const x = 40 + Math.floor(hash2(i, 3, 41) * (w - 80)), y = WALL.floorY + 14 + Math.floor(hash2(i, 4, 41) * (h - 150));
-      ellipse(c, '#1a141466', x, y, 5 + (i % 4) * 2, 2 + (i % 3));
+      softEllipse(c, '#1a141455', x, y, 5 + (i % 4) * 2, 2 + (i % 3));
     }
     for (let i = 0; i < 30; i++) {
       const x = cx - 90 + Math.floor(hash2(i, 5, 43) * 180), y = WALL.floorY + 8 + Math.floor(hash2(i, 6, 43) * 50);
-      rect(c, '#ff6a2a66', x, y, 2 + (i % 3), 1); px(c, '#ffc06088', x, y);
+      softEllipse(c, '#ff6a2a66', x + 1, y + 0.5, 1 + (i % 3) * 0.5, 0.5); softEllipse(c, '#ffc060aa', x + 0.6, y + 0.4, 0.4, 0.3);
     }
   } else {
     for (let i = 0; i < 18; i++) {
       const x = 50 + Math.floor(hash2(i, 7, 47) * (w - 100)), y = WALL.floorY + 20 + Math.floor(hash2(i, 8, 47) * (h - 160));
-      if (i % 3 === 0) ellipse(c, '#4aa06a33', x, y, 6, 2);
-      else { px(c, '#6a9a4a', x, y); px(c, '#82b95a', x + 1, y); px(c, '#56924a', x, y + 1); }
+      if (i % 3 === 0) softEllipse(c, '#4aa06a33', x, y, 6, 2);
+      else { const a = hash2(i, 9, 47) * Math.PI; softEllipse(c, '#6a9a4a', x, y, 1.6, 0.7, a); softEllipse(c, '#82b95a', x - 0.3, y - 0.2, 0.8, 0.3, a); }   // листок
     }
   }
   edgeShade(c, w, h);
@@ -443,7 +533,36 @@ function backWallModel(w: number, theme: CastleTheme): Model {
   plinthParts(parts, w, doors.map((dx) => [dx, DOORWAY.half] as const), p);
   for (const wx of windows) windowParts(parts, marks, wx, p);
   for (const dx of doors) doorwayParts(parts, dx, p);
+  wallDetailParts(parts, marks, w, p, [...windows, ...doors, w / 2]);
   return { parts, marks };
+}
+
+/**
+ * Детали задней стены (ни одной гладкой грани): резной фриз под кромкой — каменные треугольники то выступают, то
+ * утоплены; пилястры с базой и капителью через WALL_DETAIL.step (не у окон, дверей и середины — avoid); между ними
+ * железные кольца на пластинах с заклёпками.
+ */
+const WALL_DETAIL = { frieze: 3.4, tooth: 6, step: 96, pilaster: 3.2, clear: 26, ringY: 26 } as const;
+function wallDetailParts(parts: Part[], marks: Mark[], w: number, p: Palette, avoid: number[]): void {
+  const D = WALL_DETAIL, light = ramp(tone(p.wall, 0.22)), dark = ramp(tone(p.wall, -0.25)), iron = ramp('#4a4e58');
+  const fy = WALL.face - D.frieze - 0.6;
+  parts.push(box([w / 2, fy, 0.5], [w / 2 + 8, D.frieze / 2, 0.8], (s) => {
+    const x = w / 2 + s.x * (w / 2 + 8), u = (((x % D.tooth) + D.tooth) % D.tooth) / D.tooth, up = (s.y + 1) / 2;
+    return up < 1 - Math.abs(u - 0.5) * 2 ? light : dark;   // ряд треугольников
+  }));
+  const free = (x: number): boolean => avoid.every((a) => Math.abs(x - a) > D.clear);
+  for (let x = D.step / 2; x < w; x += D.step) {
+    if (free(x)) {
+      const P = D.pilaster, top = fy - D.frieze / 2 - 1.2;
+      parts.push(box([x, (WALL.plinth * 2 + top) / 2, 1.2], [P, (top - WALL.plinth * 2) / 2, 1.2], (s) => (Math.abs(s.x) > 0.7 && s.n[2] > 0.5 ? dark : light)));
+      parts.push(box([x, top + 0.8, 1.6], [P + 1.2, 0.9, 1.6], light), box([x, WALL.plinth * 2 + 0.8, 1.6], [P + 1, 0.9, 1.6], light));
+    }
+    const rx = x + D.step / 2;
+    if (rx < w - 20 && free(rx)) {
+      parts.push(box([rx, D.ringY, 0.3], [1.6, 1.8, 0.3], iron), cyl([rx - 1.1, D.ringY - 2.6, 0.9], [rx + 1.1, D.ringY - 2.6, 0.9], 0.45, iron));
+      for (const [dx, dy] of [[-1.1, 1.2], [1.1, 1.2], [-1.1, -1.2], [1.1, -1.2]] as const) marks.push({ p: [rx + dx, D.ringY + dy, 0.7], color: '#9aa0aa', n: [0, 0, 1] });
+    }
+  }
 }
 
 /**
@@ -599,7 +718,8 @@ export function paintCastleGround(scene: Phaser.Scene, key: string, w: number, h
 /** Ставит пол, заднюю и боковые стены — за всеми объектами. */
 export function addCastleGround(scene: Phaser.Scene, key: string, w: number): void {
   const k = 1 / GAME.resolution;
-  scene.add.image(0, 0, key).setOrigin(0, 0).setDepth(DEPTH.ground);
+  const floor = scene.add.image(0, 0, key).setOrigin(0, 0).setDepth(DEPTH.ground);   // пол — HD-текстура
+  floor.setScale(1 / textureResolution(floor.texture));
   scene.add.image(0, 0, wallKey(key, 'back')).setOrigin(0, 0).setScale(k).setDepth(DEPTH.ground + 1);
   // боковые стены ближе к камере, чем задняя: в углах они закрывают её грань
   scene.add.image(0, 0, wallKey(key, 'left')).setOrigin(0, 0).setScale(k).setDepth(DEPTH.ground + 2);
@@ -641,10 +761,10 @@ export function addCastleAmbience(scene: Phaser.Scene, w: number, theme: CastleT
       g.addColorStop(0, `${PALETTES[theme].light}30`); g.addColorStop(1, `${PALETTES[theme].light}00`);
       c.fillStyle = g; c.beginPath();
       c.moveTo(0, 0); c.lineTo(26, 0); c.lineTo(SHAFT.w, SHAFT.h); c.lineTo(SHAFT.w - 85, SHAFT.h); c.closePath(); c.fill();
-    });
+    }, false, true);
   }
   layout.windows.map((k) => w * k).forEach((x, i) => {
-    const shaft = scene.add.image(x - 13, CASTLE_BOUNDS.top, key).setOrigin(0, 0).setDepth(DEPTH.decals + 1).setBlendMode(Phaser.BlendModes.ADD).setAlpha(0.55);
+    const shaft = scene.add.image(x - 13, CASTLE_BOUNDS.top, key).setOrigin(0, 0).setScale(1 / GAME.resolution).setDepth(DEPTH.decals + 1).setBlendMode(Phaser.BlendModes.ADD).setAlpha(0.55);
     scene.tweens.add({ targets: shaft, alpha: 1, duration: 2600 + i * 700, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
     for (let k = 0; k < SHAFT.dust; k++) {
       const t = Math.random();

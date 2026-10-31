@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { COLORS, GAME, GLINT_EVERY, KEYS, SCENES } from '../configs/game';
+import { CANVAS_SCALE, COLORS, GAME, GLINT_EVERY, KEYS, SCENES } from '../configs/game';
 import { addTitleLogo, SiegeBackdrop, TITLE_DEPTH } from '../systems/TitleArt';
 import { audio } from '../systems/Sfx';
 import { session } from '../state/Session';
@@ -30,9 +30,9 @@ export class MenuScene extends Phaser.Scene {
 
   create(): void {
     this.busy = false;
-    this.cameras.main.setZoom(GAME.resolution).centerOn(W / 2, H / 2).fadeIn(500, 0, 0, 0);
+    this.cameras.main.setZoom(CANVAS_SCALE).centerOn(W / 2, H / 2).fadeIn(500, 0, 0, 0);
     new SiegeBackdrop(this);
-    this.add.image(0, 0, 'title_vignette').setOrigin(0, 0).setDepth(TITLE_DEPTH.vignette).setAlpha(0.55);
+    this.add.image(0, 0, 'title_vignette').setOrigin(0, 0).setScale(1 / GAME.resolution).setDepth(TITLE_DEPTH.vignette).setAlpha(0.55);
     this.top = Math.max(MENU.top, addTitleLogo(this) + MENU.pennant);
     this.ui = this.add.container(0, 0).setDepth(TITLE_DEPTH.ui + 10);
     this.showMain();

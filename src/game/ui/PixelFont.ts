@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { GAME } from '../configs/game';
+import { CANVAS_SCALE, GAME } from '../configs/game';
 
 /*
  * Собственный шрифт «Осады Бездны» — рисуется кодом, файлов нет.
@@ -192,8 +192,8 @@ type Art = (string | null)[][];
  * (Сглаживание Scale2x дорисовывало точки на стыках диагоналей — буквы выглядели неровными.)
  */
 function hiresArt(art: Art): Art {
-  for (let k = 1; k < GAME.resolution; k *= 2) art = art.flatMap((line) => { const row = line.flatMap((p) => [p, p]); return [row, [...row]]; });
-  return art;
+  const R = GAME.resolution;
+  return art.flatMap((line) => { const row = line.flatMap((p) => Array<typeof p>(R).fill(p)); return Array.from({ length: R }, () => [...row]); });
 }
 
 /** Пиксели глифа (true — закрашен) в масштабе scale; pen — срез широкого пера для крупного шрифта. */
@@ -222,16 +222,17 @@ const BLADE = ['#ffffff', '#ffffff', '#f3f6f9', '#eef2f6', '#eef2f6', '#eaeff4',
 /**
  * Размеры шрифтов: scale — увеличение рисунка, spacing — промежуток между буквами, space — ширина пробела,
  * ramp — оттенки лицевой стороны сверху вниз, bevel — блик по верхним граням штрихов (объём),
- * extrude — глубина выдавленной нижней грани (её оттенки; пусто — буква плоская).
+ * extrude — глубина выдавленной нижней грани (её оттенки; пусто — буква плоская),
+ * detail — во сколько раз атлас букв детальнее экрана (название на заставке показано вдвое крупнее — иначе мыло).
  */
 export const FONTS = {
   // в окнах, на кнопках и лентах — чистые ровные буквы без тёмного контура (контур давал «полоски» между буквами)
-  ui: { scale: 1, pen: false, bevel: false, outline: false, spacing: 1, space: 3, lineHeight: 12, ramp: BLADE, extrude: [] },
-  big: { scale: 2, pen: false, bevel: false, outline: false, spacing: 2, space: 6, lineHeight: 22, ramp: BLADE, extrude: [] },
-  title: { scale: 2, pen: false, bevel: true, outline: true, spacing: 2, space: 6, lineHeight: 22, ramp: BLADE, extrude: ['#686868', '#444444'] },
+  ui: { scale: 1, pen: false, bevel: false, outline: false, spacing: 1, space: 3, lineHeight: 12, ramp: BLADE, extrude: [], detail: 1 },
+  big: { scale: 2, pen: false, bevel: false, outline: false, spacing: 2, space: 6, lineHeight: 22, ramp: BLADE, extrude: [], detail: 1 },
+  title: { scale: 2, pen: false, bevel: true, outline: true, spacing: 2, space: 6, lineHeight: 22, ramp: BLADE, extrude: ['#686868', '#444444'], detail: 2 },
   // надписи прямо на игровом поле (подписи на полу, всплывающие числа, «!») — с контуром, иначе теряются на камне
-  world: { scale: 1, pen: false, bevel: false, outline: true, spacing: 1, space: 3, lineHeight: 12, ramp: BLADE, extrude: [] },
-  worldBig: { scale: 2, pen: false, bevel: false, outline: true, spacing: 2, space: 6, lineHeight: 22, ramp: BLADE, extrude: [] },
+  world: { scale: 1, pen: false, bevel: false, outline: true, spacing: 1, space: 3, lineHeight: 12, ramp: BLADE, extrude: [], detail: 1 },
+  worldBig: { scale: 2, pen: false, bevel: false, outline: true, spacing: 2, space: 6, lineHeight: 22, ramp: BLADE, extrude: [], detail: 1 },
 } as const;
 /** Контур и тень букв (тинт их почти не меняет — тёмное остаётся тёмным). */
 const INK = '#140f1c';
@@ -334,13 +335,110 @@ function makeFont(scene: Phaser.Scene, key: FontKey): void {
   scene.cache.bitmapFont.add(key, { data: { font: key, size: f.lineHeight * R, lineHeight: f.lineHeight * R, chars }, texture: texKey, frame: null });
 }
 
-/** Создаёт оба шрифта игры. Вызывается один раз при запуске (BootScene). */
+// ---------------- HD-шрифт: те же пиксельные буквы, но гладкие ----------------
+/**
+ * HD: буквы игры — те же рисунки, что у пиксельного шрифта (сетка CAPS/SMALL/MARKS), но нарисованные гладкой фигурой
+ * в разрешении экрана: каждый пиксель буквы — квадрат, внешние углы скруглены, на диагоналях — мостики (без лесенки).
+ * Оформление то же, что у пиксельного: сталь клинка, фаска, контур, выдавленная толщина у названия; метрики те же.
+ * false — прежний пиксельный шрифт.
+ */
+const HD_FONT = true;
+/** Во сколько раз атлас букв детальнее пикселя игры: как холст (буква ложится на экран пиксель в пиксель). */
+export const FONT_RES = HD_FONT ? CANVAS_SCALE : GAME.resolution;
+/** Гладкость: радиус скругления внешнего угла пикселя и полуширина мостика на диагонали (доли пикселя буквы). */
+const SMOOTH_GLYPH = { round: 0.4, bridge: 0.5 } as const;
+const HD_ATLAS_W = 2048;
+
+/** Фигура буквы: квадраты пикселей (внешние углы скруглены) и мостики на диагоналях; x0, y0 — начало, S — размер пикселя. */
+function glyphPath(bmp: boolean[][], x0: number, y0: number, S: number): Path2D {
+  const on = (x: number, y: number): boolean => bmp[y]?.[x] === true, r = SMOOTH_GLYPH.round * S, b = SMOOTH_GLYPH.bridge * S;
+  const path = new Path2D();
+  bmp.forEach((line, y) => line.forEach((v, x) => {
+    if (!v) return;
+    const L = x0 + x * S, T = y0 + y * S, R = L + S, B = T + S;
+    // угол скругляется, если с обеих его сторон и по диагонали пусто
+    const tl = !on(x - 1, y) && !on(x, y - 1) && !on(x - 1, y - 1) ? r : 0, tr = !on(x + 1, y) && !on(x, y - 1) && !on(x + 1, y - 1) ? r : 0;
+    const br = !on(x + 1, y) && !on(x, y + 1) && !on(x + 1, y + 1) ? r : 0, bl = !on(x - 1, y) && !on(x, y + 1) && !on(x - 1, y + 1) ? r : 0;
+    path.moveTo(L + tl, T); path.lineTo(R - tr, T); if (tr) path.arcTo(R, T, R, T + tr, tr);
+    path.lineTo(R, B - br); if (br) path.arcTo(R, B, R - br, B, br);
+    path.lineTo(L + bl, B); if (bl) path.arcTo(L, B, L, B - bl, bl);
+    path.lineTo(L, T + tl); if (tl) path.arcTo(L, T, L + tl, T, tl);
+    path.closePath();
+    // мостики: пиксели касаются только углом — соединяем их ромбом, диагональ становится ровной
+    for (const dy of [-1, 1]) if (on(x + 1, y + dy) && !on(x + 1, y) && !on(x, y + dy)) {
+      const cx = R, cy = dy > 0 ? B : T;
+      path.moveTo(cx - b, cy); path.lineTo(cx, cy - b); path.lineTo(cx + b, cy); path.lineTo(cx, cy + b); path.closePath();
+    }
+  }));
+  return path;
+}
+
+/**
+ * Рисует буквы шрифта key гладкими фигурами по пиксельным рисункам и регистрирует bitmap-шрифт с теми же метриками,
+ * что у пиксельного (FONT_INK, отступы, ширина): выдавленная толщина, контур, сталь клинка сверху вниз, блик-фаска.
+ */
+function makeFontHD(scene: Phaser.Scene, key: FontKey): void {
+  const f = FONTS[key], S = FONT_RES * f.detail, depth = f.extrude.length;
+  const glyphs = charset().map((ch) => ({ ch, cell: cellFor(ch) })).filter((g): g is { ch: string; cell: Cell } => g.cell !== null);
+  let x = 2, y = 2, rowH = 0;
+  const placed = glyphs.map((g) => {
+    const bmp = bitmap(g.cell.rows, f.scale, f.pen), cols = bmp[0]!.length;
+    const used = (cx: number): boolean => bmp.some((line) => line[cx] === true);
+    let lead = 0, trail = 0;
+    while (lead < cols - 1 && !used(lead)) lead++;
+    while (trail < cols - 1 - lead && !used(cols - 1 - trail)) trail++;
+    const w = (cols + PAD.left + PAD.right) * S, h = (bmp.length + PAD.top + depth + 2) * S;
+    if (x + w + 2 > HD_ATLAS_W) { x = 2; y += rowH + 2; rowH = 0; }
+    const at = { ...g, bmp, x, y, w, h, lead, advance: (cols - lead - trail + f.spacing) * S };
+    x += w + 2; rowH = Math.max(rowH, h);
+    return at;
+  });
+  const H = y + rowH + 2, texKey = `font_${key}`;
+  if (scene.textures.exists(texKey)) scene.textures.remove(texKey);
+  const tex = scene.textures.createCanvas(texKey, HD_ATLAS_W, H);
+  if (!tex) return;
+  const c = tex.getContext();
+  c.lineJoin = 'round';
+  for (const p of placed) {
+    const gx = p.x + PAD.left * S, gy = p.y + PAD.top * S, shape = glyphPath(p.bmp, gx, gy, S), top = gy, bottom = gy + p.bmp.length * S;
+    const lift = (dy: number): Path2D => { const moved = new Path2D(); moved.addPath(shape, new DOMMatrix([1, 0, 0, 1, 0, dy])); return moved; };
+    // выдавленная толщина (название игры): слои вниз, каждый темнее
+    for (let d = depth; d >= 1; d--) { c.fillStyle = f.extrude[d - 1]!; c.fill(lift(d * S)); }
+    if (f.outline) {
+      c.strokeStyle = INK; c.lineWidth = 2 * S;
+      for (let d = depth; d >= 1; d--) c.stroke(lift(d * S));
+      c.stroke(shape);
+    }
+    const metal = c.createLinearGradient(0, top, 0, bottom);
+    f.ramp.forEach((color, i) => metal.addColorStop(i / (f.ramp.length - 1), color));
+    c.fillStyle = metal; c.fill(shape);
+    if (f.bevel) {
+      // фаска: тело буквы чуть темнее, верхний край каждого штриха — белый блик (как у пиксельного названия)
+      c.save(); c.clip(shape);
+      c.fillStyle = 'rgba(150, 165, 185, 0.35)'; c.fill(lift(Math.max(1, 0.5 * S)));
+      c.restore();
+    }
+  }
+  tex.refresh(); tex.setFilter(Phaser.Textures.FilterMode.LINEAR);
+  const chars: Record<number, CharData> = {};
+  const add = (code: number, px: number, py: number, w: number, h: number, yOffset: number, advance: number, lead = 0): void => {
+    chars[code] = {
+      x: px, y: py, width: w, height: h, centerX: Math.floor(w / 2), centerY: Math.floor(h / 2),
+      xOffset: -(PAD.left + lead) * S, yOffset, xAdvance: advance, data: {}, kerning: {},
+      u0: px / HD_ATLAS_W, v0: 1 - py / H, u1: (px + w) / HD_ATLAS_W, v1: 1 - (py + h) / H,
+    };
+  };
+  for (const p of placed) add(p.ch.charCodeAt(0), p.x, p.y, p.w, p.h, (p.cell.row * f.scale - PAD.top) * S, p.advance, p.lead);
+  add(32, 0, 0, 0, 0, 0, (f.space + f.spacing) * S);
+  if (scene.cache.bitmapFont.exists(key)) scene.cache.bitmapFont.remove(key);
+  scene.cache.bitmapFont.add(key, { data: { font: key, size: f.lineHeight * S, lineHeight: f.lineHeight * S, chars }, texture: texKey, frame: null });
+}
+
+/** Создаёт шрифты игры (HD или пиксельные — HD_FONT). Вызывается один раз при запуске (BootScene). */
 export function makePixelFonts(scene: Phaser.Scene): void {
-  makeFont(scene, 'ui');
-  makeFont(scene, 'big');
-  makeFont(scene, 'title');
-  makeFont(scene, 'world');
-  makeFont(scene, 'worldBig');
+  for (const key of ['ui', 'big', 'title', 'world', 'worldBig'] as const) {
+    if (HD_FONT) makeFontHD(scene, key); else makeFont(scene, key);
+  }
 }
 
 /** Для проверки вне игры: рисунок символа в пикселях. */

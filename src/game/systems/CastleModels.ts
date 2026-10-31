@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { GAME } from '../configs/game';
-import { add, cross, MODEL_AXES, mul, norm, renderModel, type Axes, type Mark, type Paint, type Part, type Shade, type Surface, type Vec, type View } from './Rig3D';
+import { add, CAMERA_PITCH, cross, MODEL_AXES, mul, norm, renderModel, type Axes, type Mark, type Paint, type Part, type Shade, type Surface, type Vec, type View } from './Rig3D';
 import { addOutline, addVolume, ramp, tone, type Ramp } from './Volume';
 
 /*
@@ -61,9 +61,14 @@ export function drawModel(c: CanvasRenderingContext2D, x0: number, y0: number, w
   const img = c.getImageData(x0, y0, W, H);
   renderModel({ data: img.data, width: W, x: 0, y: 0, w: W, h: H }, anchor.x * RES, anchor.y * RES, model.parts, model.marks ?? [], { facing: 0, scale: RES, ...view });
   c.putImageData(img, x0, y0);
-  if (!model.overlay) return;
+  drawOverlay(c, x0, y0, W, H, model.overlay);
+}
+
+/** Плоская анимация модели (огонь, искры, пар) в область холста W x H (пиксели холста) от x0, y0. */
+function drawOverlay(c: CanvasRenderingContext2D, x0: number, y0: number, W: number, H: number, overlay?: (c: CanvasRenderingContext2D) => void): void {
+  if (!overlay) return;
   c.save(); c.translate(x0, y0); c.beginPath(); c.rect(0, 0, W, H); c.clip(); c.scale(RES, RES);
-  model.overlay(c);
+  overlay(c);
   c.restore();
 }
 
@@ -78,8 +83,11 @@ export function readableCanvas(scene: Phaser.Scene, key: string, w: number, h: n
   return scene.textures.addCanvas(key, canvas);
 }
 
-/** Сколько пикселей холста рисовать за одно задание экрана загрузки (больше — рывок анимации загрузки). */
-const PIXELS_PER_JOB = 96 * 64 * RES * RES * 2;
+/**
+ * Сколько пикселей холста рисовать за одно задание экрана загрузки (больше — рывок анимации загрузки):
+ * со сглаживанием краёв около 20 мс — заставка не дёргается.
+ */
+const PIXELS_PER_JOB = 96 * 64 * RES * RES;
 /**
  * Крупная модель (стена, кадр огра или короля) больше одного задания — рисуется полосами строк по столько пикселей
  * (около 10 мс): ни одно задание не дольше кадра, анимация загрузки идёт ровно.
@@ -108,10 +116,7 @@ export function drawModelJobs(ctx: () => CanvasRenderingContext2D, x0: number, y
     const m = built ??= model(), c = ctx();
     if (img) c.putImageData(img, x0, y0);
     img = null;
-    if (!m.overlay) return;
-    c.save(); c.translate(x0, y0); c.beginPath(); c.rect(0, 0, W, H); c.clip(); c.scale(RES, RES);
-    m.overlay(c);
-    c.restore();
+    drawOverlay(c, x0, y0, W, H, m.overlay);
   });
   return jobs;
 }
@@ -119,6 +124,7 @@ export function drawModelJobs(ctx: () => CanvasRenderingContext2D, x0: number, y
 /**
  * Лист кадров из 3D-модели: w x h пикселей игры на кадр, frames кадров. Задания рисуют по несколько кадров
  * со светотенью и контуром, последнее регистрирует кадры и анимацию (ключ анимации = ключ текстуры; у одного кадра её нет).
+ * Плоская анимация (огонь, искры, пар) рисуется после контура: это свет — без тёмной обводки и без светотени.
  */
 export function modelSheetJobs(scene: Phaser.Scene, key: string, w: number, h: number, frames: number, rate: number, anchor: Anchor, build: (f: number) => Model, view: Partial<View> = {}): (() => void)[] {
   const W = w * RES, H = h * RES;
@@ -132,17 +138,20 @@ export function modelSheetJobs(scene: Phaser.Scene, key: string, w: number, h: n
     (tex.customData as ResData).resolution = RES;
   }];
   const ctx = (): CanvasRenderingContext2D => tex!.getContext();
+  // модель кадра без плоской анимации; анимация запоминается и рисуется после контура
+  const overlays: ((c: CanvasRenderingContext2D) => void)[] = [];
+  const bare = (f: number): Model => { const m = build(f); if (m.overlay) overlays[f] = m.overlay; return { ...m, overlay: undefined }; };
   for (let f0 = 0; f0 < frames; f0 += perJob) {
     const f1 = Math.min(frames, f0 + perJob);
     // кадр крупнее задания — по полосам; несколько мелких кадров — за одно задание
-    if (perJob === 1 && W * H > STRIP_PIXELS) jobs.push(...drawModelJobs(ctx, f0 * W, 0, w, h, anchor, () => build(f0), view).map((job) => () => { if (tex) job(); }));
-    else jobs.push(() => { if (tex) for (let f = f0; f < f1; f++) drawModel(ctx(), f * W, 0, w, h, anchor, build(f), view); });
-    // светотень и контур — по кадру за задание
-    for (let f = f0; f < f1; f++) jobs.push(() => { if (tex) { addVolume(ctx(), W, H, W, H, f * W); addOutline(ctx(), W, H, W, H, f * W); } });
+    if (perJob === 1 && W * H > STRIP_PIXELS) jobs.push(...drawModelJobs(ctx, f0 * W, 0, w, h, anchor, () => bare(f0), view).map((job) => () => { if (tex) job(); }));
+    else jobs.push(() => { if (tex) for (let f = f0; f < f1; f++) drawModel(ctx(), f * W, 0, w, h, anchor, bare(f), view); });
+    // светотень и контур — по кадру за задание, затем огонь и искры
+    for (let f = f0; f < f1; f++) jobs.push(() => { if (tex) { addVolume(ctx(), W, H, W, H, f * W); addOutline(ctx(), W, H, W, H, f * W); drawOverlay(ctx(), f * W, 0, W, H, overlays[f]); } });
   }
   jobs.push(() => {
     if (!tex) return;
-    tex.refresh(); tex.setFilter(Phaser.Textures.FilterMode.NEAREST);
+    tex.refresh(); tex.setFilter(Phaser.Textures.FilterMode.LINEAR);
     if (frames === 1) return;
     for (let f = 0; f < frames; f++) tex.add(String(f), 0, f * W, 0, W, H);
     if (scene.anims.exists(key)) scene.anims.remove(key);
@@ -167,7 +176,7 @@ export function hiresTextureJobs(scene: Phaser.Scene, key: string, w: number, h:
       (tex.customData as ResData).resolution = RES;
     },
     ...steps(ctx).map((step) => () => { if (tex) step(); }),
-    () => { tex?.refresh(); tex?.setFilter(Phaser.Textures.FilterMode.NEAREST); tex = null; },
+    () => { tex?.refresh(); tex?.setFilter(Phaser.Textures.FilterMode.LINEAR); tex = null; },
   ];
 }
 
@@ -179,7 +188,7 @@ export function hiresTexture(scene: Phaser.Scene, key: string, w: number, h: num
   const c = tex.getContext(); c.imageSmoothingEnabled = false;
   (tex.customData as ResData).resolution = RES;
   paint(c);
-  tex.refresh(); tex.setFilter(Phaser.Textures.FilterMode.NEAREST);
+  tex.refresh(); tex.setFilter(Phaser.Textures.FilterMode.LINEAR);
 }
 
 // ---------------- плоская анимация поверх моделей (пиксели игры, шаг — пиксель холста) ----------------
@@ -204,6 +213,27 @@ export function sparkle(c: CanvasRenderingContext2D, x: number, y: number): void
   for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) dot(c, '#fff0a0', x + dx * 0.75 + 0.25 * (1 - Math.abs(dx)), y + dy * 0.75 + 0.25 * (1 - Math.abs(dy)), 0.5, 0.5);
 }
 
+// ---------------- объёмный огонь (светится сам, без теней) ----------------
+/** Чёрное пламя — объёмное: по краю силуэта лиловая кайма, к середине темнее, сердцевина почти чёрная (светится само, без теней). */
+export const VIEW_DIR = [Math.sin(CAMERA_PITCH), Math.cos(CAMERA_PITCH)] as const;
+export const flamePaint: Paint = (s) => {
+  const d = s.n[1] * VIEW_DIR[0] + s.n[2] * VIEW_DIR[1];   // насколько точка смотрит в камеру
+  return d < 0.45 ? '#c080ff' : d < 0.65 ? '#7a30c0' : d < 0.82 ? '#2a1048' : '#0a0410';
+};
+/** Живой огонь — объёмный: по краю силуэта красная кайма, к середине оранжевый и жёлтый, сердцевина почти белая. */
+export const firePaint: Paint = (s) => {
+  const d = s.n[1] * VIEW_DIR[0] + s.n[2] * VIEW_DIR[1];
+  return d < 0.4 ? '#d8401a' : d < 0.62 ? '#ff8a2a' : d < 0.84 ? '#ffc850' : '#fff4c8';
+};
+/** Язык пламени: стопка сжимающихся кверху шаров, верх колышется (phase — фаза колыхания); y0 — где основание. */
+export function flameTongue(parts: Part[], x: number, z: number, height: number, width: number, phase: number, paint: Paint = flamePaint, y0 = 3): void {
+  const n = 4;
+  for (let k = 0; k < n; k++) {
+    const t = k / n, r = width * (1 - t * 0.72), sway = Math.sin(phase + t * 3) * 2.2 * t;
+    parts.push(ball([x + sway, y0 + height * t, z], [r, (height / n) * 0.95, r], paint));
+  }
+}
+
 // ---------------- материалы ----------------
 export const M = {
   iron: ramp('#4a4656'), ironLight: ramp('#7a7f8c'), bronze: ramp('#9a7442'), bronzeLight: ramp('#c8a060'),
@@ -217,29 +247,54 @@ export const M = {
 } as const satisfies Record<string, Ramp>;
 
 // ---------------- объекты ----------------
-/** Жаровня 24x32: тренога, бронзовая чаша с ободом, тлеющие угли; огонь и искры — поверх. */
+/**
+ * Жаровня 24x32: тренога с коленами и кольцом-распоркой, лапы-шары; бронзовая чаша с золотым поясом и заклёпками,
+ * на ней обод; в чаше — объёмные угли (рдеют каждый в своей фазе), над ними объёмные языки пламени (firePaint);
+ * поверх — круглые искры, летящие вверх. BRAZIER: где чаша, высота и ширина пламени, сколько углей и искр.
+ */
+const BRAZIER = { bowlY: 16, bowl: [9.5, 6, 7.5] as Vec, rim: 18.6, flame: 13, flameW: 4.4, coals: 9, sparks: 3 } as const;
+/** Уголь: по краю силуэта тёмный, к середине рдеет; heat 0..1 — насколько раскалён сейчас. */
+function coalPaint(heat: number): Paint {
+  return (s) => {
+    const d = s.n[1] * VIEW_DIR[0] + s.n[2] * VIEW_DIR[1];
+    return d < 0.45 ? '#2a1414' : d < 0.7 ? (heat > 0.5 ? '#c8401e' : '#7a2414') : heat > 0.5 ? '#ffc04a' : '#e86a24';
+  };
+}
 function brazier(f: number): Model {
-  const p = f / ANIM.brazier.frames;
-  const parts: Part[] = [];
-  for (const [x, z] of [[-6.5, 3.5], [6.5, 3.5], [0, -6.5]] as const) parts.push(rod([x * 0.3, 12, z * 0.3], [x, 1.2, z], 0.85, M.iron), ball([x, 1, z], [1.6, 1.1, 1.6], M.iron));
-  const bowl: [Vec, Vec] = [[0, 16, 0], [9.5, 6, 7.5]];
+  const p = f / ANIM.brazier.frames, B = BRAZIER, parts: Part[] = [], marks: Mark[] = [];
+  const legs = [[-6.5, 3.5], [6.5, 3.5], [0, -6.5]] as const;
+  for (const [x, z] of legs) {
+    const knee: Vec = [x * 1.05, 6, z * 1.05];
+    parts.push(rod([x * 0.32, B.bowlY - 3.4, z * 0.32], knee, 0.8, M.iron), rod(knee, [x * 0.92, 1.2, z * 0.92], 0.75, M.iron), ball([x * 0.92, 0.9, z * 0.92], [1.5, 0.9, 1.5], M.ironLight));
+  }
+  legs.forEach(([x, z], i) => { const [x2, z2] = legs[(i + 1) % legs.length]!; parts.push(rod([x * 1.05, 6, z * 1.05], [x2 * 1.05, 6, z2 * 1.05], 0.45, M.ironLight)); });
+  const bowl: [Vec, Vec] = [[0, B.bowlY, 0], B.bowl];
   parts.push(
-    ball(bowl[0], bowl[1], (s) => (s.y > 0.42 ? null : M.bronze)),
-    ball([0, 18.6, 0], [9.7, 1, 7.7], (s) => (s.x * s.x + s.z * s.z < 0.74 ? null : M.bronzeLight)),
-    ball([0, 18.2, 0], [8.7, 0.8, 6.7], (s) => {
-      const k = hash(Math.floor((s.x + 1) * 6), Math.floor((s.z + 1) * 5), Math.floor(f / 3));
-      return k > 0.75 ? '#ffc04a' : k > 0.45 ? '#c8401e' : '#2a1414';
-    }),
+    ball(bowl[0], bowl[1], (s) => (s.y > 0.42 ? null : s.y > -0.05 && s.y < 0.16 ? M.gold : M.bronze)),
+    ball([0, B.rim, 0], [9.7, 1, 7.7], (s) => (s.x * s.x + s.z * s.z < 0.74 ? null : M.bronzeLight)),
+    ball([0, B.rim - 0.4, 0], [8.7, 0.8, 6.7], flat('#1a0c0c')),
   );
-  const marks = [-0.6, -0.2, 0.2, 0.6].map((x): Mark => ({ ...front(bowl[0], bowl[1], x, -0.2), color: '#e8c070' }));
+  // угли: кучка комьев, каждый рдеет в своей фазе
+  for (let i = 0; i < B.coals; i++) {
+    const a = (i / B.coals) * TAU * 2.3, r = 2 + (i % 3) * 2.1, heat = 0.5 + 0.5 * Math.sin(p * TAU + i * 1.9);
+    parts.push(ball([Math.cos(a) * r, B.rim + 0.4 + (i % 2) * 0.5, Math.sin(a) * r * 0.75], [1.9, 1.3, 1.7], coalPaint(heat)));
+  }
+  // пламя: большой язык посередине, три поменьше вокруг — колышутся в своих фазах
+  flameTongue(parts, 0, 0, B.flame * (0.85 + 0.15 * Math.sin(p * TAU * 2)), B.flameW, p * TAU, firePaint, B.rim);
+  for (let i = 0; i < 3; i++) {
+    const a = (i / 3) * TAU + 0.5;
+    flameTongue(parts, Math.cos(a) * 3.6, Math.sin(a) * 2.6, B.flame * 0.55 + 1.6 * Math.sin(p * TAU * 2 + i * 2.1), B.flameW * 0.55, p * TAU + i * 1.4, firePaint, B.rim);
+  }
+  for (const x of [-0.65, -0.32, 0, 0.32, 0.65]) marks.push({ ...front(bowl[0], bowl[1], x, 0.05), color: '#fff0a0' });
   return {
     parts, marks,
     overlay: (c) => {
-      flame(c, 12, 13.5, 7, 12, p);
-      for (const off of [0, 0.5]) {
-        const q = (p + off) % 1;
-        dot(c, q < 0.6 ? '#ffe08a' : '#f07a2a', 7 + off * 10 + Math.sin(q * TAU) * 1.5, 9 - q * 9, 1, 1);
+      for (let i = 0; i < B.sparks; i++) {
+        const q = (p + i / B.sparks) % 1, x = 12 + (i - 1) * 3 + Math.sin(q * TAU + i) * 1.5, y = 9 - q * 9;
+        c.globalAlpha = 1 - q * 0.8; c.fillStyle = q < 0.5 ? '#fff0a0' : '#f07a2a';
+        c.beginPath(); c.arc(x, y, 0.55 - q * 0.25, 0, TAU); c.fill();
       }
+      c.globalAlpha = 1;
     },
   };
 }
@@ -262,26 +317,43 @@ function pillar(): Model {
   };
 }
 
-/** Знамя 30x58: древко с золотыми шарами; полотно из полос, развёрнутых волной (складки), снизу — клин; на нём щит. */
+/**
+ * Знамя 30x58: перекладина с золотыми шарами, подвешена на шнуре; полотно из узких полос, развёрнутых волной (складки),
+ * снизу — клин с кистью; по краям золотая кайма, на полотне — герб ордена (как на заставке): золотая оправа,
+ * слева алое поле, справа синее, золотой крест. BANNER: полосы (и насколько соседние заходят друг на друга — без щелей),
+ * верх и низ полотна, глубина клина, кайма.
+ */
+const BANNER = { cols: 16, colW: 1.32, overlap: 0.2, top: 53, low: 7, notch: 8, trim: 0.9 } as const;
+const HERALD = { red: ramp('#b02a3a'), blue: ramp('#2a4a92') } as const;
 function banner(f: number): Model {
-  const t = (f / ANIM.banner.frames) * TAU, cols = 10, colW = 2.1, top = 53, low = 7, notch = 8;
+  const t = (f / ANIM.banner.frames) * TAU, B = BANNER, half = (B.cols * B.colW) / 2;
   const sway = Math.sin(t) * 0.8;
-  const cloth = (gx: number, gy: number, bottom: number): Shade => {
-    if (gy < bottom + 1.2) return M.gold;   // золотая бахрома по краю клина
-    // щит: золотая кайма, алое поле, светлый крест
-    const inShield = (k: number): boolean => gy <= 43 - k && gy >= 24 + k && Math.abs(gx) <= (gy >= 33 ? 8 - k : (8 - k) * Math.max(0, (gy - 24 - k) / (9 - k)));
+  // низ клина — ровная линия от краёв к острию посередине (не ступеньками по полосам)
+  const bottomAt = (gx: number): number => B.low + (Math.min(half, Math.abs(gx)) / half) * B.notch;
+  const cloth = (gx: number, gy: number): Shade | null => {
+    const bottom = bottomAt(gx);
+    if (gy < bottom) return null;
+    if (gy < bottom + 1.2 || Math.abs(gx) > half - B.trim) return M.gold;   // кайма по краю клина и по бокам
+    // щит: золотая оправа, четверти, крест
+    const inShield = (k: number): boolean => gy <= 43 - k && gy >= 24 + k && Math.abs(gx) <= (gy >= 33 ? 8 - k : (8 - k) * Math.sqrt(Math.max(0, (gy - 24 - k) / (9 - k))));
     if (!inShield(0)) return M.cloth;
-    if (!inShield(1.6)) return M.gold;
-    return (Math.abs(gx) < 1 && gy > 27 && gy < 41) || (Math.abs(gy - 37) < 1 && Math.abs(gx) < 5) ? M.linen : M.drape;
+    if (!inShield(1.4)) return M.gold;
+    if (Math.abs(gx) < 0.8 || Math.abs(gy - 37) < 0.8) return M.goldBright;
+    return gx < 0 ? HERALD.red : HERALD.blue;
   };
   const parts: Part[] = [];
-  for (let i = 0; i < cols; i++) {
-    const cx = -((cols - 1) * colW) / 2 + i * colW, phase = i * 0.9 + t;
-    const bottom = low + (Math.abs(cx) / ((cols - 1) * colW / 2)) * notch;
-    const h = (top - bottom) / 2, cy = (top + bottom) / 2;
-    parts.push(box([cx + sway * (1 - cy / top), cy, Math.sin(phase) * 1.1], [colW / 2 + 0.05, h, 0.5], (s) => cloth(cx + s.x * colW / 2, cy + s.y * h, bottom), yaw(Math.cos(phase) * 0.5)));
+  for (let i = 0; i < B.cols; i++) {
+    const cx = -half + B.colW / 2 + i * B.colW, phase = i * 0.55 + t;
+    const bottom = bottomAt(Math.abs(cx) - B.colW / 2);   // полоса — до самой нижней точки своего края, лишнее срезает cloth
+    const h = (B.top - bottom) / 2, cy = (B.top + bottom) / 2;
+    parts.push(box([cx + sway * (1 - cy / B.top), cy, Math.sin(phase) * 0.7], [B.colW / 2 + B.overlap, h, 0.5], (s) => cloth(cx + (s.x * B.colW) / 2, cy + s.y * h), yaw(Math.cos(phase) * 0.3)));
   }
-  parts.push(cyl([-13, 55, 0.5], [13, 55, 0.5], 1.8, M.wood), ball([-13.5, 55, 0.5], [2.6, 2.6, 2.6], M.gold), ball([13.5, 55, 0.5], [2.6, 2.6, 2.6], M.gold));
+  parts.push(
+    cyl([-13, 55, 0.5], [13, 55, 0.5], 1.6, M.wood), ball([-13.6, 55, 0.5], [2.4, 2.4, 2.4], M.gold), ball([13.6, 55, 0.5], [2.4, 2.4, 2.4], M.gold),
+    rod([-11, 56, 0.3], [0, 61, 0], 0.35, M.gold), rod([11, 56, 0.3], [0, 61, 0], 0.35, M.gold), ball([0, 61.2, 0], [0.9, 0.9, 0.9], M.ironLight),
+    // кисть под острием клина
+    rod([sway, B.low, 0], [sway, B.low - 2.4, 0.2], 0.3, M.gold), ball([sway, B.low - 3.6, 0.2], [0.9, 1.5, 0.9], M.gold),
+  );
   return { parts };
 }
 
@@ -294,11 +366,26 @@ function banner(f: number): Model {
 export const ARENA_RIFTS = {
   wall: { key: 'arena_wall_rift', w: 48, h: 62, anchor: { x: 24, y: 60 } },
   floor: { key: 'arena_floor_rift', w: 96, h: 60, anchor: { x: 48, y: 40 } },
+  exit: { key: 'arena_exit_rift', w: 64, h: 44, anchor: { x: 32, y: 22 } },
 } as const;
 const CRYSTAL = ramp('#8a3ad0'), CRYSTAL_TIP = ramp('#d8a8ff'), RIFT_STONE = ramp('#3a4054'), RIFT_SLAB = ramp('#4b5265');
+const RIFT_FRAME = ramp('#555c70'), RIFT_GROOVE = ramp('#2a2e3c'), RIFT_GOLD = ramp('#c8a048');
+/** Руна на камне — светится лиловым. */
+const RUNE = '#e0b0ff';
 
-/** Тьма разлома: чёрная середина, лиловый ободок (r — расстояние от середины, 0..1). */
-function voidShade(r: number): Shade { return r < 0.5 ? '#07040c' : r < 0.78 ? '#1c0b34' : '#5a22a0'; }
+/**
+ * Тьма разлома: чёрная середина, спиральные завихрения Бездны, яркий светящийся ободок у края
+ * (r — расстояние от середины 0..1, a — угол).
+ */
+function voidShade(r: number, a = 0): Shade {
+  if (r < 0.25) return '#05030a';
+  if (r > 0.86) return '#6a2ab8';
+  if (r > 0.78) return '#c070ff';   // светящийся ободок
+  const swirl = Math.sin(a * 2 + r * 9) > 0.35;
+  return swirl ? '#2c1054' : r < 0.55 ? '#0c0618' : '#1c0b34';
+}
+/** Оси бруска, повёрнутого в плоскости стены (x — вдоль угла a, y — поперёк, z — из стены). */
+function inWall(a: number): Axes { return [[Math.cos(a), Math.sin(a), 0], [-Math.sin(a), Math.cos(a), 0], [0, 0, 1]]; }
 
 /** Кристалл-осколок от base в сторону dir длиной len: четырёхгранный, сужается к светлому острию. */
 function crystal(base: Vec, dir: Vec, len: number, w: number): Part {
@@ -311,10 +398,17 @@ function crystal(base: Vec, dir: Vec, len: number, w: number): Part {
 
 /** Разлом в задней стене: тьма, кольцо сколотого камня, кристаллы по краю наружу и вперёд, выбитые камни вокруг. */
 function wallRift(): Model {
-  const cy = 30, rx = 7, ry = 17, parts: Part[] = [
+  const cy = 30, rx = 7, ry = 17, marks: Mark[] = [], parts: Part[] = [
     ball([0, cy, -0.6], [rx + 3, ry + 3.5, 1], (s) => (Math.hypot(s.x, s.y) > 0.6 ? RIFT_STONE : null)),
-    ball([0, cy, 0], [rx, ry, 1.6], (s) => voidShade(Math.hypot(s.x, s.y))),
+    ball([0, cy, 0], [rx, ry, 1.6], (s) => voidShade(Math.hypot(s.x, s.y), Math.atan2(s.y, s.x))),
   ];
+  // каменная арка: резные блоки с бороздой посередине, на каждом втором — светящаяся руна; замковый камень с золотом
+  const blocks = 12;
+  for (let i = 0; i < blocks; i++) {
+    const a = (i / blocks) * Math.PI * 2, x = Math.cos(a) * (rx + 4.6), y = cy + Math.sin(a) * (ry + 4.4), top = i === blocks / 4 * 3;
+    parts.push(box([x, y, 0.9], [top ? 2.6 : 1.9, top ? 2.2 : 1.6, 1.4], (q) => (Math.abs(q.x) < 0.14 && q.n[2] > 0.5 ? RIFT_GROOVE : top && q.y > 0.6 ? RIFT_GOLD : RIFT_FRAME), inWall(a + Math.PI / 2)));
+    if (i % 2 === 0) marks.push({ p: [x, y, 2.4], color: RUNE, n: [0, 0, 1] });
+  }
   for (let i = 0; i < 11; i++) {
     const a = (i / 11) * Math.PI * 2 + hash(i, 1, 7) * 0.4, len = 5 + hash(i, 2, 7) * 6;
     parts.push(crystal([Math.cos(a) * (rx + 0.5), cy + Math.sin(a) * (ry + 0.5), 0.6], [Math.cos(a) * 0.8, Math.sin(a) * 0.5, 0.55], len, 1.1));
@@ -323,23 +417,45 @@ function wallRift(): Model {
     const a = (i / 7) * Math.PI * 2 + 0.3, d = 1.45 + hash(i, 3, 7) * 0.25;
     parts.push(box([Math.cos(a) * rx * d * 1.3, cy + Math.sin(a) * ry * d, 0.8], [1.8 + hash(i, 4, 7), 1.3, 1.2], RIFT_STONE, yaw(hash(i, 5, 7) - 0.5)));
   }
-  return { parts };
+  return { parts, marks };
 }
 
 /** Разлом в полу: воронка тьмы, вокруг вздыбленные наружу плиты пола, из глубины торчат кристаллы. */
 function floorRift(): Model {
-  const R = 22, parts: Part[] = [ball([0, 0, 0], [R, 0.5, R], (s) => voidShade(Math.hypot(s.x, s.z)))];
+  const R = 22, marks: Mark[] = [], parts: Part[] = [ball([0, 0, 0], [R, 0.5, R], (s) => voidShade(Math.hypot(s.x, s.z), Math.atan2(s.z, s.x)))];
   for (let i = 0; i < 10; i++) {
     const a = (i / 10) * Math.PI * 2 + hash(i, 1, 9) * 0.3, out: Vec = [Math.cos(a), 0, Math.sin(a)];
     const up = norm([out[0] * 0.55, 1, out[2] * 0.55]), tangent: Vec = [-out[2], 0, out[0]];
-    parts.push(box(add(mul(out, R + 2), [0, 1.4, 0]), [4.2, 1.2, 3.2], RIFT_SLAB, [tangent, up, cross(tangent, up)]));
+    parts.push(box(add(mul(out, R + 2), [0, 1.4, 0]), [4.2, 1.2, 3.2], (q) => (q.n[1] > 0.5 && Math.abs(q.x) < 0.1 ? RIFT_GROOVE : RIFT_SLAB), [tangent, up, cross(tangent, up)]));
+    if (i % 2 === 0) marks.push({ p: add(mul(out, R + 2), [0, 2.8, 0]), color: RUNE, n: [0, 1, 0] });   // руна на плите
   }
   for (let i = 0; i < 8; i++) {
     const a = (i / 8) * Math.PI * 2 + 0.5, len = 9 + hash(i, 2, 9) * 8;
     parts.push(crystal([Math.cos(a) * 10, -0.5, Math.sin(a) * 10], [Math.cos(a) * 0.5, 1, Math.sin(a) * 0.5], len, 1.6));
   }
   parts.push(crystal([1, -0.5, 0], [0.15, 1, 0.1], 15, 1.9), crystal([-3, -0.5, 2], [-0.3, 1, 0.2], 11, 1.5), crystal([3, -0.5, -2], [0.3, 1, -0.2], 10, 1.4));
-  return { parts };
+  return { parts, marks };
+}
+
+/**
+ * Разлом-выход внизу арены (держать E — домой): плоский — по нему ходят. Кольцо резных плит вровень с полом
+ * с золотой вставкой и светящимися рунами, внутри — закрученная тьма с ярким ободком; не похож на разломы-ловушки
+ * (те с кристаллами и вздыбленными плитами). EXIT_RIFT: радиус тьмы, сколько плит, их ширина.
+ */
+const EXIT_RIFT = { r: 20, slabs: 14, slab: 3.4 } as const;
+function exitRift(): Model {
+  const R = EXIT_RIFT.r, marks: Mark[] = [], parts: Part[] = [ball([0, 0.2, 0], [R, 0.5, R], (s) => voidShade(Math.hypot(s.x, s.z), Math.atan2(s.z, s.x)))];
+  for (let i = 0; i < EXIT_RIFT.slabs; i++) {
+    const a = (i / EXIT_RIFT.slabs) * TAU, out: Vec = [Math.cos(a), 0, Math.sin(a)], tangent: Vec = [-out[2], 0, out[0]];
+    const len = (TAU * (R + EXIT_RIFT.slab)) / EXIT_RIFT.slabs / 2 - 0.35;
+    parts.push(box(add(mul(out, R + EXIT_RIFT.slab), [0, 0.9, 0]), [len, 0.9, EXIT_RIFT.slab], (q) => {
+      if (q.n[1] < 0.5) return RIFT_STONE;
+      if (Math.abs(q.z + 0.15) < 0.12) return RIFT_GOLD;   // золотая вставка по кругу
+      return Math.abs(q.x) > 0.9 ? RIFT_GROOVE : RIFT_SLAB;
+    }, [tangent, [0, 1, 0], out]));
+    if (i % 2 === 0) marks.push({ p: add(mul(out, R + EXIT_RIFT.slab * 1.45), [0, 1.9, 0]), color: RUNE, n: [0, 1, 0] });
+  }
+  return { parts, marks };
 }
 
 /**
@@ -405,7 +521,7 @@ export function bricks(base: Ramp, joint: string, rows: number, cols: number): (
   };
 }
 
-/** Котик бежит галопом 20x16 (смотрит влево): передние и задние лапы тянутся навстречу, хвост вздрагивает. */
+/** Котик бежит галопом (CAT_FRAME, смотрит влево): передние и задние лапы тянутся навстречу, хвост вздрагивает. */
 function catRun(f: number): Model {
   const t = (f / ANIM.catRun.frames) * TAU, bob = -Math.abs(Math.sin(t)) * 1.2, reach = Math.sin(t) * 2;
   const stripes: Paint = (s) => (s.y > 0.2 && Math.sin(s.x * 9) > 0.55 ? M.furDark : s.y < -0.45 ? M.cream : M.fur);
@@ -422,7 +538,15 @@ function catRun(f: number): Model {
   return { parts, marks: [{ p: [-7.6, 8 + bob, 1.5], color: '#7ad040', n: [-0.5, 0, 0.8] }, { p: [-8.8, 6.9 + bob, 0.6], color: '#f08a9a', n: [-1, 0, 0.3] }] };
 }
 
-/** Котик сидит 20x16 (смотрит на зрителя): хвост вздрагивает, кот моргает. */
+/**
+ * Бег по диагонали — та же модель, повёрнутая вокруг вертикали: «вниз» — бежит влево и к камере (видна мордочка),
+ * «вверх» — влево и от камеры (видна спина). Вправо — те же кадры, отражённые спрайтом.
+ */
+/** Кадр котика (пиксели игры) и где в нём лапы на полу: снизу запас — при беге по диагонали зад ближе к камере и ниже. */
+export const CAT_FRAME = { w: 20, h: 22, x: 10, y: 17 } as const;
+export const CAT_DIAGONAL = { down: { key: 'cat_run_down', facing: 0.8 }, up: { key: 'cat_run_up', facing: -0.8 } } as const;
+
+/** Котик сидит (CAT_FRAME, смотрит на зрителя): хвост вздрагивает, кот моргает. */
 function catSit(f: number): Model {
   const p = f / ANIM.catSit.frames, swish = Math.abs(Math.sin(p * TAU)) * 2, blink = p >= 0.75 && p < 0.84;
   const parts: Part[] = [
@@ -446,10 +570,13 @@ export function propTextureJobs(scene: Phaser.Scene): (() => void)[] {
     ...modelSheetJobs(scene, 'castle_pillar', 32, 64, 1, 1, { x: 16, y: 60 }, pillar),
     ...sheet('castle_brazier', 24, 32, ANIM.brazier, { x: 12, y: 29 }, brazier),
     ...sheet('castle_merchant', 52, 40, ANIM.merchant, { x: 26, y: 31 }, merchant, MERCHANT_FACING),
-    ...sheet('cat_run', 20, 16, ANIM.catRun, { x: 10, y: 15 }, catRun),
-    ...sheet('cat_sit', 20, 16, ANIM.catSit, { x: 10, y: 15 }, catSit),
+    ...sheet('cat_run', CAT_FRAME.w, CAT_FRAME.h, ANIM.catRun, CAT_FRAME, catRun),
+    ...sheet(CAT_DIAGONAL.down.key, CAT_FRAME.w, CAT_FRAME.h, ANIM.catRun, CAT_FRAME, catRun, CAT_DIAGONAL.down.facing),
+    ...sheet(CAT_DIAGONAL.up.key, CAT_FRAME.w, CAT_FRAME.h, ANIM.catRun, CAT_FRAME, catRun, CAT_DIAGONAL.up.facing),
+    ...sheet('cat_sit', CAT_FRAME.w, CAT_FRAME.h, ANIM.catSit, CAT_FRAME, catSit),
     ...modelSheetJobs(scene, ARENA_RIFTS.wall.key, ARENA_RIFTS.wall.w, ARENA_RIFTS.wall.h, 1, 1, ARENA_RIFTS.wall.anchor, wallRift),
     ...modelSheetJobs(scene, ARENA_RIFTS.floor.key, ARENA_RIFTS.floor.w, ARENA_RIFTS.floor.h, 1, 1, ARENA_RIFTS.floor.anchor, floorRift),
+    ...modelSheetJobs(scene, ARENA_RIFTS.exit.key, ARENA_RIFTS.exit.w, ARENA_RIFTS.exit.h, 1, 1, ARENA_RIFTS.exit.anchor, exitRift),
   ];
 }
 

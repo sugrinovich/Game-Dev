@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { textureResolution } from './CastleModels';
 import { COLORS, DEPTH } from '../configs/game';
 import { TEXTURES } from '../configs/assets';
 import { PText } from '../ui/PText';
@@ -33,8 +34,8 @@ export class Effects {
       const a = Phaser.Math.FloatBetween(a0, a1);
       const sp = Phaser.Math.FloatBetween(s0, s1);
       const life = Phaser.Math.FloatBetween(l0, l1);
-      const sc = Phaser.Math.FloatBetween(z0, z1) / 2;
-      const img = (this.pool.pop() ?? this.scene.add.image(0, 0, TEXTURES.px)).setPosition(o.x, o.y).setVisible(true).setAlpha(1)
+      const sc = Phaser.Math.FloatBetween(z0, z1) / DOT_SIZE;   // HD: частица — мягкая круглая точка
+      const img = (this.pool.pop() ?? this.scene.add.image(0, 0, TEXTURES.dot)).setPosition(o.x, o.y).setVisible(true).setAlpha(1)
         .setTint(Phaser.Utils.Array.GetRandom(tints)).setScale(sc).setDepth(o.depth ?? DEPTH.fx).setBlendMode(o.blend ?? Phaser.BlendModes.NORMAL);
       this.parts.push({ img, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, gy: o.gravity ?? 0, life, max: life, endScale: o.endScale ?? 0, baseScale: sc, drag: o.drag ?? 0 });
     }
@@ -59,7 +60,8 @@ export class Effects {
 
   /** Проигрывает разовую анимацию эффекта (лист с тем же ключом) и удаляет спрайт. */
   anim(x: number, y: number, key: string, scale = 1, depth: number = DEPTH.fx, tint?: number): Phaser.GameObjects.Sprite {
-    const s = this.scene.add.sprite(x, y, key, '0').setDepth(depth).setScale(scale);
+    const s = this.scene.add.sprite(x, y, key, '0').setDepth(depth);
+    s.setScale(scale / textureResolution(s.texture));   // эффекты нарисованы в HD
     s.setOrigin(0.5, 0.5);
     if (tint !== undefined) s.setTint(tint);
     s.play(key);
@@ -103,9 +105,20 @@ export class Effects {
   }
 }
 
-/** Создаёт служебные текстуры: точка, свечение, тень. */
+/** Сторона текстуры частицы (пикселей холста): частица size пикселей игры показывается с масштабом size / DOT_SIZE. */
+const DOT_SIZE = 8;
+
+/** Создаёт служебные текстуры: точка, мягкая точка частиц, свечение, тень. */
 export function makeUtilityTextures(scene: Phaser.Scene): void {
   const tm = scene.textures;
+  if (!tm.exists(TEXTURES.dot)) {
+    const c = tm.createCanvas(TEXTURES.dot, DOT_SIZE, DOT_SIZE);
+    if (c) {
+      const ctx = c.getContext(), r = DOT_SIZE / 2, g = ctx.createRadialGradient(r, r, 0, r, r, r);
+      g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.55, 'rgba(255,255,255,0.9)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g; ctx.fillRect(0, 0, DOT_SIZE, DOT_SIZE); c.refresh();
+    }
+  }
   if (!tm.exists(TEXTURES.px)) {
     const c = tm.createCanvas(TEXTURES.px, 2, 2);
     if (c) { const ctx = c.getContext(); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 2, 2); c.refresh(); }

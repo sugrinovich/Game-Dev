@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { textureResolution } from '../systems/CastleModels';
 import type { PlayerConfig } from '../configs/characters';
 import { HERO_ORIGIN, TEXTURES, type PlayerDirection } from '../configs/assets';
 import { COLORS, KEYS } from '../configs/game';
@@ -89,7 +90,6 @@ export class Player extends Phaser.GameObjects.Sprite {
     this.config = config;
     this.setOrigin(HERO_ORIGIN.x, HERO_ORIGIN.y);
     this.setDisplaySize(config.displaySize * FIGURE_SCALE, config.displaySize * FIGURE_SCALE);
-    this.texture.setFilter(Phaser.Textures.FilterMode.NEAREST);
     this.shadow = scene.add.image(x, y, TEXTURES.shadow).setScale(0.8);
 
     scene.add.existing(this);
@@ -166,6 +166,7 @@ export class Player extends Phaser.GameObjects.Sprite {
     this.slashSprite?.destroy();
     this.slashSprite = this.scene.add.sprite(this.x + this.aimX * 4, this.y - 9 + this.aimY * 4, 'slash', '0')
       .setOrigin(SLASH_ORIGIN.x, SLASH_ORIGIN.y).setRotation(ang).setDepth(this.y + 30);
+    this.slashSprite.setScale(1 / textureResolution(this.slashSprite.texture));
     this.slashSprite.play('slash');
     this.slashSprite.once(Phaser.Animations.Events.ANIMATION_COMPLETE, () => { this.slashSprite?.destroy(); this.slashSprite = null; });
   }

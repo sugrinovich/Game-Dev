@@ -3,12 +3,13 @@ import { HERO_SHEET, TEXTURES, type PlayerDirection } from '../configs/assets';
 import { ENEMY_TYPES } from '../configs/characters';
 import { COLORS, GAME } from '../configs/game';
 import { ensureArrowTexture } from '../characters/Skeleton';
+import { FONT_INK } from '../ui/PixelFont';
 import { PText } from '../ui/PText';
-import { ellipse, poly, px, rect, texture } from './CastleArt';
-import { ball, box, cyl, drawModel, hiresTexture, modelSheetJobs, rod, stoneAt, yaw, type Masonry, type Model } from './CastleModels';
+import { poly, texture } from './CastleArt';
+import { ball, box, cyl, drawModel, drawModelJobs, hiresTexture, hiresTextureJobs, M, modelSheetJobs, rod, stoneAt, textureResolution, yaw, type Masonry, type Model } from './CastleModels';
 import { Effects, makeUtilityTextures } from './Effects';
 import { gripOffset, heroModel, heroOrigin, ORB, type Build, type HeroAnimKind, type Outfit, type Pose } from './HeroArt';
-import { makeCrestTexture } from './IconArt';
+import { CREST_RES, makeCrestTexture } from './IconArt';
 import { makeFireballSheet } from './MobArt';
 import { add, mul, norm, project, sub, type Axes, type Mark, type Paint, type Part, type Shade, type Surface, type Vec } from './Rig3D';
 import { addOutline, ramp, type Ramp } from './Volume';
@@ -53,19 +54,18 @@ const SIEGE = {
 type MarcherKind = 'orc' | 'ogre' | 'skeleton' | 'archer';
 
 /**
- * Лист врага только для заставки: одна сторона, одна анимация. Рисуется сразу (доля полного листа на 8 сторон),
- * поэтому орда стоит на месте с первого кадра загрузки; полные листы для игры рисуются этапами загрузки.
+ * Лист врага только для заставки: одна сторона, одна анимация (доля полного листа на 8 сторон) — рисуется первыми
+ * заданиями загрузки (siegeTextureJobs); полные листы для игры рисуются этапами загрузки позже.
  * Ключ текстуры — он же ключ анимации.
  */
-function splashSheet(scene: Phaser.Scene, kind: MarcherKind | 'king', anim: HeroAnimKind, facing: number): string {
-  const key = `siege_${kind}_${anim}`;
-  if (scene.textures.exists(key)) return key;
+function splashKey(kind: MarcherKind | 'king', anim: HeroAnimKind): string { return `siege_${kind}_${anim}`; }
+function splashJobs(scene: Phaser.Scene, kind: MarcherKind | 'king', anim: HeroAnimKind, facing: number): (() => void)[] {
+  const key = splashKey(kind, anim);
+  if (scene.textures.exists(key)) return [];
   const e = ENEMY_TYPES[kind], { build } = heroModel(e.outfit, e.body, anim, 0);
   const frames = anim === 'walk' ? HERO_SHEET.walkFrames : HERO_SHEET.idleFrames;
   const rate = anim === 'walk' ? build.walkRate : build.idleRate;
-  const jobs = modelSheetJobs(scene, key, build.frame, build.frame, frames, rate, { x: build.frame / 2, y: build.ground }, (f) => heroModel(e.outfit, e.body, anim, f / frames), { facing, scale: GAME.resolution });
-  for (const job of jobs) job();
-  return key;
+  return modelSheetJobs(scene, key, build.frame, build.frame, frames, rate, { x: build.frame / 2, y: build.ground }, (f) => heroModel(e.outfit, e.body, anim, f / frames), { facing, scale: GAME.resolution });
 }
 const MARCH_SPEED: Record<MarcherKind, number> = { orc: 16, ogre: 9, skeleton: 13, archer: 12 };
 const HORDE: { kind: MarcherKind; x: number; y: number }[] = [
@@ -77,24 +77,34 @@ const HORDE: { kind: MarcherKind; x: number; y: number }[] = [
 // ---------------- фон: небо, луна, горы, замок, поле ----------------
 const SKY = [[11, 8, 24], [20, 13, 38], [34, 18, 46], [58, 22, 52], [92, 26, 48], [138, 42, 42], [192, 72, 42]] as const;
 const SOIL = [[18, 12, 22], [26, 18, 30], [36, 22, 34], [52, 28, 36], [84, 36, 36]] as const;
-/** Матрица Байера 4x4: «пиксельный» плавный переход между цветами. */
-const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5] as const;
 
-/** Небо и земля — попиксельно через ImageData (в сотни раз быстрее fillRect на каждый пиксель). */
+/** Небо и земля (HD): градиенты — небо к багровому горизонту, зарево Бездны справа, земля с волнистым краем. */
 function paintSkyAndSoil(c: CanvasRenderingContext2D): void {
-  const img = c.createImageData(W, H);
-  const d = img.data;
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-    const dither = BAYER[(y & 3) * 4 + (x & 3)]! / 16 - 0.5;
-    const glow = Math.max(0, 1 - Math.hypot((x - 410) * 0.8, (y - 205) * 1.4) / 230);
-    const ground = y >= SIEGE.horizon + Math.round(Math.sin(x * 0.05) * 2);
-    const pal = ground ? SOIL : SKY;
-    const v = ground ? ((y - SIEGE.horizon) / 72) * 0.5 + Math.max(0, (x - 260) / 220) * 0.45 : Math.pow(y / 200, 1.7) * 0.55 + glow * glow * 0.75;
-    const col = pal[Math.max(0, Math.min(pal.length - 1, Math.round(v * (pal.length - 1) + dither)))]!;
-    const i = (y * W + x) * 4;
-    d[i] = col[0]; d[i + 1] = col[1]; d[i + 2] = col[2]; d[i + 3] = 255;
-  }
-  c.putImageData(img, 0, 0);
+  const rgb = (p: readonly number[], a = 1): string => `rgba(${p[0]}, ${p[1]}, ${p[2]}, ${a})`;
+  // HD: небо — плавный градиент от тёмного верха к багровому краю у горизонта
+  const sky = c.createLinearGradient(0, 0, 0, SIEGE.horizon);
+  sky.addColorStop(0, rgb(SKY[0])); sky.addColorStop(0.55, rgb(SKY[1])); sky.addColorStop(0.85, rgb(SKY[2])); sky.addColorStop(1, rgb(SKY[3]));
+  c.fillStyle = sky; c.fillRect(0, 0, W, SIEGE.horizon + 4);
+  // зарево Бездны справа у горизонта — мягкое пятно (эллипс шире, чем выше)
+  c.save(); c.translate(410, 205); c.scale(1.25, 0.72);
+  const glow = c.createRadialGradient(0, 0, 0, 0, 0, 230);
+  glow.addColorStop(0, rgb(SKY[6], 0.85)); glow.addColorStop(0.25, rgb(SKY[5], 0.6)); glow.addColorStop(0.55, rgb(SKY[4], 0.25)); glow.addColorStop(1, rgb(SKY[4], 0));
+  c.fillStyle = glow; c.fillRect(-400, -400, 800, 800); c.restore();
+  // земля: волнистый край; к низу и вправо (к зареву) светлее
+  c.beginPath(); c.moveTo(0, H);
+  for (let x = 0; x <= W; x += 2) c.lineTo(x, SIEGE.horizon + Math.sin(x * 0.05) * 2);
+  c.lineTo(W, H); c.closePath();
+  const soil = c.createLinearGradient(0, SIEGE.horizon, 0, H);
+  soil.addColorStop(0, rgb(SOIL[0])); soil.addColorStop(1, rgb(SOIL[2]));
+  c.fillStyle = soil; c.fill();
+  const warm = c.createLinearGradient(260, 0, W, 0);
+  warm.addColorStop(0, rgb(SOIL[4], 0)); warm.addColorStop(1, rgb(SOIL[4], 0.5));
+  c.fillStyle = warm; c.fill();
+}
+
+/** Мягкая точка (HD): звезда, камешек. */
+function dotHD(c: CanvasRenderingContext2D, color: string, x: number, y: number, r: number): void {
+  c.fillStyle = color; c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
 }
 
 /** Предсказуемый «случайный» генератор: картинка одинаковая при каждом запуске. */
@@ -106,15 +116,18 @@ function seeded(seed: number): () => number {
 function paintSky(c: CanvasRenderingContext2D): void {
   const rnd = seeded(7);
   for (let i = 0; i < 90; i++) {
-    const x = Math.floor(rnd() * 330), y = Math.floor(rnd() * 130);
-    px(c, rnd() < 0.2 ? '#ffffff' : '#a8a0c8', x, y);
-    if (rnd() < 0.08) { px(c, '#6a6488', x - 1, y); px(c, '#6a6488', x + 1, y); px(c, '#6a6488', x, y - 1); px(c, '#6a6488', x, y + 1); }
+    const x = rnd() * 330, y = rnd() * 130, bright = rnd() < 0.2;
+    dotHD(c, bright ? '#ffffff' : '#b0a8d0', x, y, bright ? 0.6 : 0.4);
+    if (rnd() < 0.08) { c.strokeStyle = 'rgba(160, 150, 200, 0.6)'; c.lineWidth = 0.25; c.beginPath(); c.moveTo(x - 1.6, y); c.lineTo(x + 1.6, y); c.moveTo(x, y - 1.6); c.lineTo(x, y + 1.6); c.stroke(); }
   }
-  // луна с ореолом, освещена слева
-  for (const [r, a] of [[26, '10'], [21, '18']] as const) ellipse(c, `#e8e0c8${a}`, 78, 42, r, r);
-  ellipse(c, '#e8e0c8', 78, 42, 15, 15);
-  for (let dy = -15; dy <= 15; dy++) { const half = Math.round(15 * Math.sqrt(Math.max(0, 1 - (dy / 15.5) ** 2))); rect(c, '#b8ae98', 78 + half - 4, 42 + dy, 4, 1); }
-  for (const [x, y, r] of [[72, 36, 3], [83, 47, 2], [76, 50, 1], [86, 35, 1]] as const) ellipse(c, '#c8bea8', x, y, r, r);
+  // луна (HD): мягкий ореол, диск освещён слева, кратеры
+  const halo = c.createRadialGradient(78, 42, 12, 78, 42, 30);
+  halo.addColorStop(0, 'rgba(232, 224, 200, 0.22)'); halo.addColorStop(1, 'rgba(232, 224, 200, 0)');
+  c.fillStyle = halo; c.fillRect(40, 4, 80, 80);
+  const disk = c.createLinearGradient(63, 42, 93, 42);
+  disk.addColorStop(0, '#f0e8d2'); disk.addColorStop(0.6, '#e2d8c0'); disk.addColorStop(1, '#a89e88');
+  c.fillStyle = disk; c.beginPath(); c.arc(78, 42, 15, 0, Math.PI * 2); c.fill();
+  for (const [x, y, r] of [[72, 36, 3], [83, 47, 2], [76, 50, 1.2], [86, 35, 1.1]] as const) { dotHD(c, 'rgba(160, 150, 130, 0.55)', x, y, r); dotHD(c, 'rgba(255, 250, 235, 0.35)', x - r * 0.3, y - r * 0.3, r * 0.5); }
   // разлом Бездны на горизонте
   const rift = [[420, 118], [426, 140], [418, 158], [428, 178], [421, 200], [433, 200], [440, 176], [431, 156], [438, 138], [428, 116]];
   poly(c, '#4a1660', rift.map(([x, y]) => [x! + (x! < 429 ? -4 : 4), y!]));
@@ -129,22 +142,31 @@ function paintSky(c: CanvasRenderingContext2D): void {
     poly(c, col, pts);
     for (let i = 1; i < pts.length - 2; i++) {
       const [x0, y0] = pts[i]!, [x1, y1] = pts[i + 1]!;
-      if (x0! > 260 && y1! > y0!) for (let x = x0!; x < x1!; x++) px(c, rim, x, Math.round(y0! + ((y1! - y0!) * (x - x0!)) / (x1! - x0!)));
+      if (x0! > 260 && y1! > y0!) { c.strokeStyle = rim; c.lineWidth = 0.8; c.beginPath(); c.moveTo(x0!, y0!); c.lineTo(x1!, y1!); c.stroke(); }   // подсвеченный склон
     }
   }
 }
 
 function paintField(c: CanvasRenderingContext2D): void {
   const rnd = seeded(21);
-  for (let i = 0; i < 60; i++) { const x = Math.floor(rnd() * W), y = SIEGE.horizon + 4 + Math.floor(rnd() * 66); rect(c, '#3a2a30', x, y - 2, 1, 2); px(c, '#4a3438', x + 1, y - 1); }
-  for (let i = 0; i < 14; i++) { const x = Math.floor(rnd() * W), y = SIEGE.horizon + 8 + Math.floor(rnd() * 60); ellipse(c, '#241a28', x, y, 3, 1); px(c, '#4a3a44', x - 1, y - 1); }
-  // огненные трещины — Бездна пробивается сквозь землю
+  c.lineCap = 'round';
+  // кочки и пучки травы, тёмные пятна
+  for (let i = 0; i < 60; i++) { const x = rnd() * W, y = SIEGE.horizon + 4 + rnd() * 66; c.strokeStyle = '#4a3438'; c.lineWidth = 0.5; c.beginPath(); c.moveTo(x, y); c.lineTo(x + 0.6, y - 2); c.moveTo(x + 1, y); c.lineTo(x + 1.8, y - 1.5); c.stroke(); }
+  for (let i = 0; i < 14; i++) { const x = rnd() * W, y = SIEGE.horizon + 8 + rnd() * 60; c.fillStyle = 'rgba(36, 26, 40, 0.8)'; c.beginPath(); c.ellipse(x, y, 3, 1.1, 0, 0, Math.PI * 2); c.fill(); }
+  // огненные трещины — Бездна пробивается сквозь землю: светящиеся ломаные
   for (let k = 0; k < 6; k++) {
-    let x = 290 + Math.floor(rnd() * 180), y = 210 + Math.floor(rnd() * 55);
-    for (let i = 0; i < 18; i++) { rect(c, '#c83a1a', x, y, 2, 1); px(c, '#ffc060', x, y); x -= 1 + Math.floor(rnd() * 2); y += Math.floor(rnd() * 3) - 1; }
+    let x = 290 + rnd() * 180, y = 210 + rnd() * 55;
+    const pts: [number, number][] = [[x, y]];
+    for (let i = 0; i < 18; i++) { x -= 1 + rnd() * 1.6; y += (rnd() - 0.5) * 2.4; pts.push([x, y]); }
+    c.save(); c.shadowColor = '#ff7a2a'; c.shadowBlur = 3;
+    for (const [color, width] of [['#c83a1a', 1.2], ['#ffc060', 0.4]] as const) { c.strokeStyle = color; c.lineWidth = width; c.beginPath(); pts.forEach(([px0, py0], i) => (i ? c.lineTo(px0, py0) : c.moveTo(px0, py0))); c.stroke(); }
+    c.restore();
   }
   // сломанные копья и порванный стяг на поле боя
-  for (const [x, y] of [[236, 236], [262, 250], [282, 226]] as const) { for (let i = 0; i < 12; i++) px(c, '#5a4030', x + Math.floor(i / 3), y - i); px(c, '#9aa0a8', x + 4, y - 12); }
+  for (const [x, y] of [[236, 236], [262, 250], [282, 226]] as const) {
+    c.strokeStyle = '#5a4030'; c.lineWidth = 0.9; c.beginPath(); c.moveTo(x, y); c.lineTo(x + 4, y - 12); c.stroke();
+    c.fillStyle = '#9aa0a8'; c.beginPath(); c.moveTo(x + 3.4, y - 11); c.lineTo(x + 5.2, y - 14.5); c.lineTo(x + 4.8, y - 10.6); c.closePath(); c.fill();
+  }
   poly(c, '#6a1a24', [[263, 238], [270, 240], [266, 244], [270, 247], [263, 246]]);
 }
 
@@ -544,56 +566,104 @@ function knightModel(f: number): Model {
   return { parts, marks };
 }
 
-/** Текстуры заставки. Повторный вызов ничего не делает. */
-function makeSiegeTextures(scene: Phaser.Scene): void {
-  if (scene.textures.exists('siege_bg')) return;
-  texture(scene, 'siege_bg', W, H, (c) => { paintSkyAndSoil(c); paintSky(c); paintField(c); });
-  hiresTexture(scene, 'siege_castle', CASTLE_TEX.w, CASTLE_TEX.h, (c) => {
-    const R = GAME.resolution, w = CASTLE_TEX.w * R, h = CASTLE_TEX.h * R;
-    drawModel(c, 0, 0, CASTLE_TEX.w, CASTLE_TEX.h, { x: CASTLE_TEX.ax, y: CASTLE_TEX.ay }, castleModel(), { ...CASTLE_VIEW, scale: R * CASTLE_SCALE });
-    addOutline(c, w, h, w, h);
-  });
-  const knight = modelSheetJobs(scene, 'title_knight', KNIGHT.w, KNIGHT.h, KNIGHT.frames, KNIGHT.rate, { x: KNIGHT.ax, y: KNIGHT.ay }, knightModel, { facing: KNIGHT.facing, scale: GAME.resolution * KNIGHT.scale });
-  for (const job of knight) job();
-  makeFireballSheet(scene);
+/** Листы врагов заставки: король парит, пехота идёт, лучник стоит и стреляет. */
+const SPLASH: [MarcherKind | 'king', HeroAnimKind, number][] = [
+  ['king', 'idle', SIEGE.kingTurn], ...(['orc', 'ogre', 'skeleton', 'archer'] as const).map((k): [MarcherKind, HeroAnimKind, number] => [k, 'walk', SIEGE.marchTurn]),
+  ['archer', 'idle', SIEGE.marchTurn],
+];
+
+/**
+ * Тяжёлые текстуры заставки (небо, замок, рыцарь, орда, огненный шар) — по заданиям: экран загрузки показывается
+ * сразу, а сцена осады проявляется, когда готова (иначе первый кадр ждал бы больше секунды). Готовое пропускается.
+ */
+export function siegeTextureJobs(scene: Phaser.Scene): (() => void)[] {
+  const has = (key: string): boolean => scene.textures.exists(key), R = GAME.resolution, w = CASTLE_TEX.w * R, h = CASTLE_TEX.h * R;
+  return [
+    ...(has('siege_bg') ? [] : [() => texture(scene, 'siege_bg', W, H, (c) => { paintSkyAndSoil(c); paintSky(c); paintField(c); }, false, true)]),
+    ...hiresTextureJobs(scene, 'siege_castle', CASTLE_TEX.w, CASTLE_TEX.h, (ctx) => [
+      ...drawModelJobs(ctx, 0, 0, CASTLE_TEX.w, CASTLE_TEX.h, { x: CASTLE_TEX.ax, y: CASTLE_TEX.ay }, castleModel, { ...CASTLE_VIEW, scale: R * CASTLE_SCALE }),
+      () => addOutline(ctx(), w, h, w, h),
+    ]),
+    ...(has('title_knight') ? [] : modelSheetJobs(scene, 'title_knight', KNIGHT.w, KNIGHT.h, KNIGHT.frames, KNIGHT.rate, { x: KNIGHT.ax, y: KNIGHT.ay }, knightModel, { facing: KNIGHT.facing, scale: R * KNIGHT.scale })),
+    () => makeFireballSheet(scene), () => ensureArrowTexture(scene),
+    ...SPLASH.flatMap(([kind, anim, facing]) => splashJobs(scene, kind, anim, facing)),
+  ];
+}
+
+/** Лёгкое для первого кадра заставки: точки, сияние, тень, герб, затемнение краёв. Повторный вызов ничего не делает. */
+export function makeTitleBasics(scene: Phaser.Scene): void {
+  makeUtilityTextures(scene);
   makeCrestTexture(scene);
-  ensureArrowTexture(scene);
+  if (scene.textures.exists('title_vignette')) return;
   // затемнение по краям экрана (раньше — картинка title_vignette.png)
   texture(scene, 'title_vignette', W, H, (c) => {
-    const img = c.createImageData(W, H);
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-      const d = Math.hypot((x - W / 2) / (W / 2), (y - H / 2) / (H / 2));
-      const i = (y * W + x) * 4;
-      img.data[i] = 8; img.data[i + 1] = 6; img.data[i + 2] = 16; img.data[i + 3] = Math.round(Math.max(0, d - 0.6) * 1.6 * 255);
-    }
-    c.putImageData(img, 0, 0);
-  });
+    // HD: плавное затемнение от середины к краям (эллипс по размеру экрана)
+    c.save(); c.translate(W / 2, H / 2); c.scale(W / 2, H / 2);
+    const g = c.createRadialGradient(0, 0, 0.6, 0, 0, 1.25);
+    g.addColorStop(0, 'rgba(8, 6, 16, 0)'); g.addColorStop(1, 'rgba(8, 6, 16, 1)');
+    c.fillStyle = g; c.fillRect(-1, -1, 2, 2); c.restore();
+  }, false, true);
 }
 
 // ---------------- логотип ----------------
 /**
- * Логотип сверху вниз: герб (высота 40), название (верх строки), золотая черта, девиз.
- * Название покачивается вниз на bob пикселей — черта и девиз стоят ниже его самой нижней точки с зазором gap.
+ * Логотип сверху вниз: герб, название, золотая черта с камнем, девиз. Зазоры между ними и от верха экрана одинаковые (gap)
+ * и считаются по самим буквам (FONT_INK), а не по строке шрифта; название покачивается вниз на bob — черта ниже его самой
+ * нижней точки. crestHalf — половина видимой высоты герба; outline — контур названия над буквами;
+ * длинное название уменьшается до ширины экрана без margin по краям.
  */
-const LOGO = { crestY: 2, titleY: 38, titleScale: 2, bob: 2, gap: 4 } as const;
+const LOGO = { gap: 4, crestHalf: 21, titleScale: 2, bob: 2, outline: 1, margin: 16 } as const;
+/** Черта под названием — 3D-модель: кадр (пиксели игры), половина высоты прутьев (ромб посередине выступает), наклон камеры (почти анфас). */
+const DIVIDER = { key: 'title_divider', w: 236, h: 14, half: 2.5, pitch: 0.3, bar: 104 } as const;
+
+/** Черта: два золотых прута, сужающихся к шарикам на концах; посередине — золотой ромб с рубином и бусины по бокам. */
+function dividerModel(): Model {
+  const ruby = ramp('#c83040'), parts: Part[] = [
+    box([0, 0, 0], [3.3, 3.3, 1.3], M.gold, [[Math.SQRT1_2, Math.SQRT1_2, 0], [-Math.SQRT1_2, Math.SQRT1_2, 0], [0, 0, 1]]),
+    ball([0, 0, 1.2], [1.7, 1.7, 1.2], ruby),
+  ];
+  for (const side of [-1, 1]) {
+    parts.push(
+      ball([side * 6.6, 0, 0], [1.3, 1.3, 1.3], M.goldBright),
+      rod([side * 9, 0, 0], [side * (DIVIDER.bar - 30), 0, 0], 0.95, M.gold),
+      rod([side * (DIVIDER.bar - 30), 0, 0], [side * DIVIDER.bar, 0, 0], 0.6, M.gold),
+      ball([side * (DIVIDER.bar + 1.4), 0, 0], [1.4, 1.4, 1.4], M.goldBright),
+    );
+  }
+  return { parts, marks: [{ p: [-0.6, 0.7, 2.3], color: '#ffd0d8', n: [0, 0, 1] }] };
+}
+
+function makeDividerTexture(scene: Phaser.Scene): void {
+  if (scene.textures.exists(DIVIDER.key)) return;
+  const { w, h } = DIVIDER, R = GAME.resolution;
+  hiresTexture(scene, DIVIDER.key, w, h, (c) => {
+    drawModel(c, 0, 0, w, h, { x: w / 2, y: h / 2 }, dividerModel(), { pitch: DIVIDER.pitch });
+    addOutline(c, w * R, h * R, w * R, h * R);
+  });
+}
+
 /** Герб, название и девиз — одинаковые на загрузке и в меню. Возвращает Y под логотипом (с зазором). */
 export function addTitleLogo(scene: Phaser.Scene): number {
-  const d = TITLE_DEPTH.ui;
-  const title = new PText(scene, W / 2, LOGO.titleY, GAME.title, { font: 'title', ax: 0.5, ay: 0, color: COLORS.blade, scale: LOGO.titleScale, shine: true });
-  const titleH = title.textHeight * LOGO.titleScale;
+  const d = TITLE_DEPTH.ui, ink = FONT_INK.title, gap = LOGO.gap;
+  const crestY = gap + LOGO.crestHalf;
+  const title = new PText(scene, W / 2, 0, GAME.title, { font: 'title', ax: 0.5, ay: 0, color: COLORS.blade, shine: true });
+  const scale = Math.min(LOGO.titleScale, (W - LOGO.margin * 2) / title.textWidth);
+  // верх контура букв — на gap ниже герба
+  title.setScale(scale).setY(crestY + LOGO.crestHalf + gap + LOGO.outline - ink.top * scale);
+  const titleBottom = title.y + ink.bottom * scale + LOGO.bob;
   // золотое сияние за гербом и тёплый ореол за названием — мягко дышат
-  const crestGlow = scene.add.image(W / 2, LOGO.crestY + 20, TEXTURES.glow).setTint(0xffc860).setBlendMode(Phaser.BlendModes.ADD).setScale(2.2).setAlpha(0.32).setDepth(d - 1);
-  const titleGlow = scene.add.image(W / 2, LOGO.titleY + titleH / 2, TEXTURES.glow).setTint(0xff9a3a).setBlendMode(Phaser.BlendModes.ADD).setScale(6.5, 1.1).setAlpha(0.22).setDepth(d - 1);
+  const crestGlow = scene.add.image(W / 2, crestY, TEXTURES.glow).setTint(0xffc860).setBlendMode(Phaser.BlendModes.ADD).setScale(2.2).setAlpha(0.32).setDepth(d - 1);
+  const titleGlow = scene.add.image(W / 2, title.y + ink.center * scale, TEXTURES.glow).setTint(0xff9a3a).setBlendMode(Phaser.BlendModes.ADD).setScale(6.5, 1.1).setAlpha(0.22).setDepth(d - 1);
   scene.tweens.add({ targets: [crestGlow, titleGlow], alpha: '-=0.12', duration: 1800, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
-  scene.add.image(W / 2, LOGO.crestY, 'title_crest').setOrigin(0.5, 0).setDepth(d);
+  scene.add.image(W / 2, crestY, 'title_crest').setScale(1 / CREST_RES).setDepth(d);
   const bobbing = scene.add.container(0, 0, [title]).setDepth(d);
   scene.tweens.add({ targets: bobbing, y: LOGO.bob, duration: 2200, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
-  const r = LOGO.titleY + titleH + LOGO.bob + LOGO.gap;
-  const g = scene.add.graphics().setDepth(d);
-  g.fillStyle(0xa07c4c, 1).fillRect(W / 2 - 112, r, 102, 1).fillRect(W / 2 + 10, r, 102, 1);
-  g.fillStyle(0xf2d060, 1).fillRect(W / 2 - 2, r - 2, 4, 4).fillRect(W / 2 - 1, r - 3, 2, 6).fillRect(W / 2 - 3, r - 1, 6, 2);
-  const subtitle = new PText(scene, W / 2, r + LOGO.gap, GAME.subtitle, { ax: 0.5, color: COLORS.text, shine: true }).setDepth(d);
-  return r + LOGO.gap + subtitle.textHeight + LOGO.gap;
+  makeDividerTexture(scene);
+  const lineY = titleBottom + gap + DIVIDER.half;
+  scene.add.image(W / 2, lineY, DIVIDER.key).setScale(1 / GAME.resolution).setDepth(d);
+  const subTop = lineY + DIVIDER.half + gap - FONT_INK.ui.top;
+  new PText(scene, W / 2, subTop, GAME.subtitle, { ax: 0.5, color: COLORS.text, shine: true }).setDepth(d);
+  return subTop + FONT_INK.ui.bottom + gap;
 }
 
 // ---------------- живая сцена ----------------
@@ -615,16 +685,15 @@ export class SiegeBackdrop {
   private readonly pos = new Phaser.Math.Vector2();
 
   constructor(private readonly scene: Phaser.Scene) {
-    makeUtilityTextures(scene);
-    makeSiegeTextures(scene);
+    makeTitleBasics(scene);
+    for (const job of siegeTextureJobs(scene)) job();   // в меню всё уже готово — заданий нет
     this.fx = new Effects(scene);
     const R = GAME.resolution;
-    scene.add.image(0, 0, 'siege_bg').setOrigin(0, 0).setDepth(TITLE_DEPTH.bg);
+    scene.add.image(0, 0, 'siege_bg').setOrigin(0, 0).setScale(1 / GAME.resolution).setDepth(TITLE_DEPTH.bg);
     const riftGlow = scene.add.image(429, 160, TEXTURES.glow).setTint(0xa040ff).setBlendMode(Phaser.BlendModes.ADD).setScale(3, 5).setAlpha(0.35).setDepth(TITLE_DEPTH.bg + 1);
     scene.tweens.add({ targets: riftGlow, alpha: 0.2, duration: 1400, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
     scene.add.image(CASTLE_AT.x - CASTLE_TEX.ax, CASTLE_AT.y - CASTLE_TEX.ay, 'siege_castle').setOrigin(0, 0).setScale(1 / R).setDepth(TITLE_DEPTH.bg + 2);
     this.addCastleLights();
-    // листы врагов заставки рисуются сразу (см. splashSheet) — орда на месте с первого кадра загрузки
     for (const k of SIEGE.kings) this.addKing(k.x, k.y);
     for (const h of HORDE) this.addMarcher(h.kind, h.x, h.y);
     scene.add.image(SIEGE.knight.x, SIEGE.knight.y, TEXTURES.shadow).setScale(1.3, 0.8).setDepth(SIEGE.knight.y - 1);
@@ -658,7 +727,7 @@ export class SiegeBackdrop {
 
   private addKing(x: number, y: number): void {
     const glow = this.scene.add.image(x, y - 30, TEXTURES.glow).setTint(0x8a3aff).setBlendMode(Phaser.BlendModes.ADD).setScale(2.4, 3).setAlpha(0.3).setDepth(y - 2);
-    const key = splashSheet(this.scene, 'king', 'idle', SIEGE.kingTurn), o = heroOrigin(ENEMY_TYPES.king.body);
+    const key = splashKey('king', 'idle'), o = heroOrigin(ENEMY_TYPES.king.body);
     const king = this.scene.add.sprite(x, y, key, '0').setOrigin(o.x, o.y).setScale(1 / GAME.resolution).setDepth(y).play(key);
     king.anims.setProgress(Math.random());
     this.scene.tweens.add({ targets: [king, glow], y: '-=4', duration: 1600 + Math.random() * 600, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
@@ -666,12 +735,12 @@ export class SiegeBackdrop {
   }
 
   private addMarcher(kind: MarcherKind, x: number, y: number): void {
-    const key = splashSheet(this.scene, kind, 'walk', SIEGE.marchTurn), o = heroOrigin(ENEMY_TYPES[kind].body);
+    const key = splashKey(kind, 'walk'), o = heroOrigin(ENEMY_TYPES[kind].body);
     const sprite = this.scene.add.sprite(x, y, key, '0').setOrigin(o.x, o.y).setScale(1 / GAME.resolution).play(key);
     sprite.setDepth(y).anims.setProgress(Math.random());
     const shadow = this.scene.add.image(x, y, TEXTURES.shadow).setScale(kind === 'ogre' ? 1.3 : 0.7, 0.7).setDepth(y - 1);
     const stopX = kind === 'archer' ? Phaser.Math.Between(SIEGE.archers.stopX[0], SIEGE.archers.stopX[1]) : null;
-    const idle = kind === 'archer' ? splashSheet(this.scene, kind, 'idle', SIEGE.marchTurn) : null;
+    const idle = kind === 'archer' ? splashKey(kind, 'idle') : null;
     this.marchers.push({ sprite, shadow, speed: MARCH_SPEED[kind], fadeX: Phaser.Math.Between(SIEGE.fadeX[0], SIEGE.fadeX[1]), idle, stopX, shotIn: 0.5 });
   }
 
@@ -741,7 +810,7 @@ export class SiegeBackdrop {
     const u = 1 - fb.t;
     this.pos.set(u * u * fb.from.x + 2 * u * fb.t * fb.ctrl.x + fb.t * fb.t * fb.to.x, u * u * fb.from.y + 2 * u * fb.t * fb.ctrl.y + fb.t * fb.t * fb.to.y);
     const back = Math.atan2(fb.sprite.y - this.pos.y, fb.sprite.x - this.pos.x);
-    fb.sprite.setPosition(this.pos.x, this.pos.y).setScale(Math.min(SIEGE.fireScale, 0.3 + fb.t * 4));
+    fb.sprite.setPosition(this.pos.x, this.pos.y).setScale(Math.min(SIEGE.fireScale, 0.3 + fb.t * 4) / textureResolution(fb.sprite.texture));
     fb.glow.setPosition(this.pos.x, this.pos.y);
     this.fx.burst({ x: this.pos.x, y: this.pos.y, count: 3, speed: [10, 40], angle: [back - 0.6, back + 0.6], life: [0.3, 0.7], size: [3, 7], tints: [0xffe070, 0xffa030, 0xf05a1e, 0xb02a14], gravity: -15, blend: Phaser.BlendModes.ADD, depth: TITLE_DEPTH.fire - 1 });
     if (fb.t >= 1) this.explode(fb);
@@ -755,7 +824,8 @@ export class SiegeBackdrop {
     const target = castleTarget(), to = new Phaser.Math.Vector2(target.x, target.y);
     const ctrl = new Phaser.Math.Vector2((from.x + to.x) / 2, Math.min(from.y, to.y) - 80);
     this.fx.burst({ x: from.x, y: from.y, count: 14, speed: [20, 60], life: [0.3, 0.6], size: [2, 4], tints: [0xa040ff, 0xe0a0ff, 0xffffff], blend: Phaser.BlendModes.ADD, depth: TITLE_DEPTH.fire });
-    const sprite = this.scene.add.sprite(from.x, from.y, 'fireball', '0').setScale(0.3).setDepth(TITLE_DEPTH.fire).play('fireball');
+    const sprite = this.scene.add.sprite(from.x, from.y, 'fireball', '0').setDepth(TITLE_DEPTH.fire).play('fireball');
+    sprite.setScale(0.3 / textureResolution(sprite.texture));
     const glow = this.scene.add.image(from.x, from.y, TEXTURES.glow).setTint(0xff7a2a).setBlendMode(Phaser.BlendModes.ADD).setScale(3.4).setAlpha(0.45).setDepth(TITLE_DEPTH.fire - 2);
     this.fireball = { sprite, glow, t: 0, from, ctrl, to };
   }

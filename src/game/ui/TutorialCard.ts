@@ -1,8 +1,8 @@
 import Phaser from 'phaser';
 import { outfitFor } from '../characters/Player';
 import { COLORS, DEPTH, GAME, KEYS, MOUSE_LABEL } from '../configs/game';
-import type { PlayerDirection } from '../configs/assets';
-import { ensureHeroSheet, FIGURE_SCALE, heroAnimKey, heroAttackFrame, heroOrigin, STARTER_OUTFIT } from '../systems/HeroArt';
+import { HERO_SHEET, type PlayerDirection } from '../configs/assets';
+import { ensureHeroSheet, heroAnimKey, heroAttackFrame, heroOrigin, STARTER_OUTFIT } from '../systems/HeroArt';
 import { addIcon } from '../systems/IconArt';
 import { audio } from '../systems/Sfx';
 import { session } from '../state/Session';
@@ -234,7 +234,8 @@ export class TutorialCard {
   private makeHero(): void {
     this.heroSheet = ensureHeroSheet(this.scene, outfitFor(session.data.equipped));
     const o = heroOrigin();
-    this.hero = this.scene.add.sprite(0, 0, this.heroSheet, '0').setOrigin(o.x, o.y).setScale(HERO_DEMO.scale / (GAME.resolution * FIGURE_SCALE));
+    this.hero = this.scene.add.sprite(0, 0, this.heroSheet, '0').setOrigin(o.x, o.y);
+    this.hero.setScale((HERO_DEMO.scale * HERO_SHEET.frameSize) / this.hero.width);
     this.box.add(this.hero);
   }
 
@@ -341,7 +342,8 @@ export class TutorialCard {
   private makeHandScene(): void {
     const H = HAND_DEMO, b = this.handButton(), o = heroOrigin();
     this.handSheets = { stick: ensureHeroSheet(this.scene, STARTER_OUTFIT), sword: ensureHeroSheet(this.scene, { ...STARTER_OUTFIT, weapon: 'sword' }) };
-    this.handHero = this.scene.add.sprite(this.x0 + H.heroX, this.y0 + this.demoH - 10, this.handSheets.stick, '0').setOrigin(o.x, o.y).setScale(HERO_DEMO.scale / (GAME.resolution * FIGURE_SCALE));
+    this.handHero = this.scene.add.sprite(this.x0 + H.heroX, this.y0 + this.demoH - 10, this.handSheets.stick, '0').setOrigin(o.x, o.y);
+    this.handHero.setScale((HERO_DEMO.scale * HERO_SHEET.frameSize) / this.handHero.width);
     const btnText = new PText(this.scene, b.x + H.btnW / 2, buttonTextY(b.y, H.btnH), 'Оружие в руке', { ax: 0.5, color: COLORS.text });
     const rows = [EQUIPMENT.sword.name, 'Без оружия'].map((label, i) => new PText(this.scene, b.x + H.btnW - H.menuW + H.pad + 5, buttonTextY(this.handMenuY() + H.pad + i * H.row, H.row), label, { color: COLORS.label }));
     this.handScene = [this.handHero, btnText, ...rows];

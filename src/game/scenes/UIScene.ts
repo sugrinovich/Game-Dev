@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { COLORS, DEPTH, GAME, GLINT_EVERY, KEYS, SCENES } from '../configs/game';
+import { CANVAS_SCALE, COLORS, DEPTH, GAME, GLINT_EVERY, KEYS, SCENES } from '../configs/game';
 import { TEXTURES } from '../configs/assets';
 import { EQUIPMENT, EQUIPMENT_IDS, RARITIES, SHOP_DEPARTMENTS, SHOP_ITEMS, type ShopItemId } from '../configs/items';
 import { SETTINGS } from '../configs/settings';
@@ -175,7 +175,7 @@ export class UIScene extends Phaser.Scene {
     this.toasts = [];
     this.hudPulses = []; this.pauseMenu = false; this.paused = false;
     this.modal = null; this.inventory = null; this.tip = null; this.minimap = null; this.miniImg = null; this.bannerText = null;
-    this.cameras.main.setRoundPixels(true).setZoom(GAME.resolution).centerOn(W / 2, H / 2);
+    this.cameras.main.setRoundPixels(true).setZoom(CANVAS_SCALE).centerOn(W / 2, H / 2);
     // табличка состояния: здоровье, эликсиры, монеты — рамка рисуется один раз
     drawPanel(this.add.graphics(), HUD.x, HUD.y, HUD.w, HUD_H, { alpha: 0.82, rules: false });
     // мягкие свечения за иконками (под ними): сердце бьётся, эликсир и монеты мерцают
