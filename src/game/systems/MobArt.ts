@@ -1,8 +1,9 @@
 import Phaser from 'phaser';
 import { GAME } from '../configs/game';
 import { sheetJobs } from './CastleArt';
-import { ball, firePaint, readableCanvas, VIEW_DIR, type Model } from './CastleModels';
+import { ball, firePaint, readableCanvas, textureResolution, VIEW_DIR, type Model } from './CastleModels';
 import { renderModel, type Paint, type Part } from './Rig3D';
+import { SLASH_ARC } from './SpellArt';
 
 /*
  * Эффекты ударов и огненный шар Короля Бездны — всё рисуется кодом, файлов нет.
@@ -11,8 +12,17 @@ import { renderModel, type Paint, type Part } from './Rig3D';
 
 const TAU = Math.PI * 2;
 
-/** Точка вращения взмаха клинка: от неё дуга расходится вперёд. */
+/** Точка вращения взмаха клинка (доли кадра 3D-дуги fx_slash): от неё дуга расходится вперёд. */
 export const SLASH_ORIGIN = { x: 6 / 48, y: 0.5 } as const;
+
+/**
+ * Дуга удара по зоне урона: внешний край — ровно на range от бьющего (сама дуга начинается в offset от него),
+ * раскрыта на halfArc. Длиннее удар — больше дуга: что видно, то и бьёт.
+ */
+export function fitSlash(sprite: Phaser.GameObjects.Sprite, range: number, halfArc: number, offset: number): Phaser.GameObjects.Sprite {
+  const res = textureResolution(sprite.texture), k = Math.max(0.2, (range - offset) / SLASH_ARC.r);
+  return sprite.setScale(k / res, (k * Math.min(2, halfArc / SLASH_ARC.half)) / res);
+}
 
 
 /** Мягкое пятно света или дыма (HD): середина color, к краю прозрачно. */
@@ -20,26 +30,6 @@ function puff(c: CanvasRenderingContext2D, x: number, y: number, r: number, colo
   const g = c.createRadialGradient(x, y, 0, x, y, r);
   g.addColorStop(0, color); g.addColorStop(1, 'rgba(0, 0, 0, 0)');
   c.globalAlpha = alpha; c.fillStyle = g; c.beginPath(); c.arc(x, y, r, 0, TAU); c.fill(); c.globalAlpha = 1;
-}
-
-/** Дуга удара клинком (HD): светлый серп, нарастает за 3 кадра и гаснет; по внешнему краю — белая кромка. */
-function paintSlash(c: CanvasRenderingContext2D, f: number): void {
-  const a0 = -1.2, a1 = 1.2, ox = 6, oy = 16, steps = 28;
-  const span = a0 + (a1 - a0) * Math.min(1, (f + 1) / 3), fade = f >= 3 ? f - 2 : 0, outer = 26 - fade;
-  const at = (i: number): number => a0 + ((span - a0) * i) / steps;
-  c.globalAlpha = fade > 1 ? 0.5 : 1;
-  c.beginPath();
-  for (let i = 0; i <= steps; i++) c.lineTo(ox + Math.cos(at(i)) * outer, oy + Math.sin(at(i)) * outer);
-  for (let i = steps; i >= 0; i--) {
-    const u = (at(i) - a0) / (a1 - a0), r = outer - Math.max(0.2, (6 - fade * 2) * Math.sin(Math.PI * u));
-    c.lineTo(ox + Math.cos(at(i)) * r, oy + Math.sin(at(i)) * r);
-  }
-  const g = c.createRadialGradient(ox, oy, outer - 7, ox, oy, outer);
-  g.addColorStop(0, 'rgba(138, 200, 255, 0)'); g.addColorStop(0.6, '#a8d8ff'); g.addColorStop(1, '#ffffff');
-  c.fillStyle = g; c.fill();
-  c.strokeStyle = '#ffffff'; c.lineWidth = 0.7; c.lineCap = 'round';
-  c.beginPath(); c.arc(ox, oy, outer - 0.3, a0 + 0.15, span - 0.05); c.stroke();
-  c.globalAlpha = 1;
 }
 
 /** Искра удара (HD): лучистая звезда с белым ядром, гаснет к жёлтому. */
@@ -107,17 +97,22 @@ function fireballModel(f: number): Model {
   return { parts };
 }
 
-/** Огненный шар Короля Бездны (нужен уже заставке на экране загрузки); повторный вызов ничего не делает. */
-export function makeFireballSheet(scene: Phaser.Scene): void {
+/**
+ * Огненный шар Короля Бездны (нужен уже заставке на экране загрузки) — по кадру за задание (весь лист сразу — рывок
+ * загрузки); пусто, если лист уже готов.
+ */
+export function fireballJobs(scene: Phaser.Scene): (() => void)[] {
   const key = 'fireball';
-  if (scene.textures.exists(key)) return;
+  if (scene.textures.exists(key)) return [];
   const { size, frames, res } = FIREBALL, F = Math.round(size * res);
-  const tex = readableCanvas(scene, key, F * frames, F);
-  if (!tex) return;
-  (tex.customData as { resolution?: number }).resolution = res;
-  const c = tex.getContext();
-  for (let f = 0; f < frames; f++) {
-    const img = c.createImageData(F, F), m = fireballModel(f);
+  let tex: Phaser.Textures.CanvasTexture | null = null;
+  const jobs: (() => void)[] = [() => {
+    tex = readableCanvas(scene, key, F * frames, F);
+    if (tex) (tex.customData as { resolution?: number }).resolution = res;
+  }];
+  for (let f = 0; f < frames; f++) jobs.push(() => {
+    if (!tex) return;
+    const c = tex.getContext(), img = c.createImageData(F, F), m = fireballModel(f);
     renderModel({ data: img.data, width: F, x: 0, y: 0, w: F, h: F }, F / 2, F / 2, m.parts, [], { facing: 0, scale: res });
     c.putImageData(img, f * F, 0);
     // сияние — позади шара
@@ -125,16 +120,20 @@ export function makeFireballSheet(scene: Phaser.Scene): void {
     glow.addColorStop(0, 'rgba(255, 150, 50, 0.55)'); glow.addColorStop(0.5, 'rgba(240, 90, 30, 0.2)'); glow.addColorStop(1, 'rgba(176, 42, 20, 0)');
     c.save(); c.globalCompositeOperation = 'destination-over'; c.fillStyle = glow; c.fillRect(f * F, 0, F, F); c.restore();
     tex.add(String(f), 0, f * F, 0, F, F);
-  }
-  tex.refresh(); tex.setFilter(Phaser.Textures.FilterMode.LINEAR);
-  if (scene.anims.exists(key)) scene.anims.remove(key);
-  scene.anims.create({ key, frames: Array.from({ length: frames }, (_, f) => ({ key, frame: String(f) })), frameRate: FIREBALL.rate, repeat: -1 });
+  });
+  jobs.push(() => {
+    if (!tex) return;
+    tex.refresh(); tex.setFilter(Phaser.Textures.FilterMode.LINEAR);
+    if (scene.anims.exists(key)) scene.anims.remove(key);
+    scene.anims.create({ key, frames: Array.from({ length: frames }, (_, f) => ({ key, frame: String(f) })), frameRate: FIREBALL.rate, repeat: -1 });
+    tex = null;
+  });
+  return jobs;
 }
 
 /** Эффекты ударов и иконки интерфейса — экран загрузки выполняет задания понемногу. */
 export function effectTextureJobs(scene: Phaser.Scene): (() => void)[] {
   return [
-    ...sheetJobs(scene, 'slash', 48, 32, 5, 26, paintSlash, false, 0, true),
     ...sheetJobs(scene, 'spark', 16, 16, 4, 22, paintSpark, false, 0, true),
     ...sheetJobs(scene, 'dust', 16, 12, 4, 14, paintDust, false, 0, true),
     ...sheetJobs(scene, 'poof', 24, 24, 5, 14, paintPoof, false, 0, true),

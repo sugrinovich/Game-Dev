@@ -56,6 +56,7 @@ export function moveCircle(e: Point, dx: number, dy: number, r: number, flying: 
     const b = map.edges;
     e.x = Math.min(map.width - b.side, Math.max(b.side, e.x + dx));
     e.y = Math.min(map.height - b.bottom, Math.max(b.top, e.y + dy));
+    map.pullInside(e);
     return false;
   }
   const blockedAt = (x: number, y: number): boolean =>

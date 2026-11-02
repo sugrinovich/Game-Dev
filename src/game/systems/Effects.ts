@@ -105,6 +105,16 @@ export class Effects {
   }
 }
 
+/**
+ * Попала ли точка (px, py) в зону удара: не дальше range (+ pad — радиус цели) от бьющего и не дальше halfArc от
+ * направления удара (вплотную к бьющему — попадает с любой стороны). Зона на экране не рисуется — только расчёт урона.
+ */
+export function inStrikeZone(px: number, py: number, x: number, y: number, angle: number, range: number, halfArc: number, pad = 0): boolean {
+  const d = Math.hypot(px - x, py - y);
+  if (d > range + pad) return false;
+  return d <= pad || Math.abs(Phaser.Math.Angle.Wrap(Math.atan2(py - y, px - x) - angle)) <= halfArc;
+}
+
 /** Сторона текстуры частицы (пикселей холста): частица size пикселей игры показывается с масштабом size / DOT_SIZE. */
 const DOT_SIZE = 8;
 

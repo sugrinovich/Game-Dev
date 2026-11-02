@@ -1,5 +1,36 @@
 import { GAME } from '../configs/game';
 
+/** Нота: высота (C4, A#3…), длительность в долях такта. */
+type Note = [string, number];
+/**
+ * Гимн России (музыка А. В. Александрова): мелодия куплета и бас по тактам, темп — долей в минуту.
+ * Ведущий голос — мягкая «медь» (треугольник с тихой пилой октавой ниже), под ним — бас на первую долю.
+ */
+const ANTHEM = {
+  bpm: 76,
+  melody: [
+    ['G4', 1],
+    ['C5', 2], ['G4', 1.5], ['A4', 0.5], ['B4', 2], ['E4', 1], ['E4', 1],
+    ['A4', 2], ['G4', 1.5], ['F4', 0.5], ['G4', 2], ['C4', 1], ['C4', 1],
+    ['D4', 2], ['D4', 1.5], ['E4', 0.5], ['F4', 2], ['F4', 1.5], ['G4', 0.5],
+    ['A4', 2], ['B4', 1], ['C5', 1], ['D5', 3], ['G4', 1],
+    ['E5', 2], ['D5', 1.5], ['C5', 0.5], ['D5', 2], ['B4', 1], ['G4', 1],
+    ['C5', 2], ['B4', 1.5], ['A4', 0.5], ['B4', 2], ['E4', 1], ['E4', 1],
+    ['A4', 2], ['G4', 1.5], ['F4', 0.5], ['G4', 2], ['C4', 1], ['C4', 1],
+    ['C5', 2], ['B4', 1.5], ['A4', 0.5], ['G4', 4],
+  ] as Note[],
+  /** Бас — по такту (4 доли), начиная после затакта. */
+  bass: ['C3', 'E3', 'F3', 'C3', 'G2', 'F2', 'A2', 'G2', 'C3', 'G2', 'A2', 'E2', 'F2', 'C3', 'G2', 'C3'],
+} as const;
+/** Частота ноты: C4 = до первой октавы. */
+function freq(note: string): number {
+  const names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+  const m = /^([A-G]#?)(\d)$/.exec(note);
+  if (!m) return 440;
+  const n = names.indexOf(m[1]!) + (Number(m[2]) + 1) * 12;
+  return 440 * 2 ** ((n - 69) / 12);
+}
+
 /**
  * Звуки и музыка без файлов: всё синтезируется WebAudio.
  * Браузер разрешает звук только после первого нажатия, поэтому init() вызывается по клику/клавише.
@@ -12,6 +43,8 @@ class AudioSystem {
   private musicTimer = 0;
   private musicMode: 'calm' | 'tense' | 'off' = 'off';
   private step = 0;
+  /** Играющий гимн: его громкость (отключить — тишина сразу) и таймер конца; музыка, которая играла до него. */
+  private anthem: { gain: GainNode; timer: number; resume: 'calm' | 'tense' | 'off' } | null = null;
 
   constructor() {
     try { this.muted = JSON.parse(localStorage.getItem(GAME.settingsKey) ?? '{}').muted === true; } catch { /* нет настроек */ }
@@ -79,6 +112,20 @@ class AudioSystem {
       case 'select': this.tone(380, 380, 0.05, 'square', 0.05); break;
       case 'error': this.tone(180, 120, 0.15, 'sawtooth', 0.1); break;
       case 'swing': this.noise(0.14, 1800, 0.22, 0, 0.7); this.tone(300, 120, 0.1, 'triangle', 0.06); break;
+      // голоса удара (оружие складывается — звучат разом): свист клинка, звон катаны, тяжёлый гул, свист укола, тетива, гром
+      case 'slash': this.noise(0.12, 2400, 0.2, 0, 0.8); this.tone(500, 200, 0.1, 'triangle', 0.05); break;
+      case 'shing': this.tone(1800, 2600, 0.12, 'triangle', 0.05); this.tone(3200, 2400, 0.16, 'sine', 0.035); this.noise(0.07, 4200, 0.12, 0, 2); break;
+      case 'heavy': this.noise(0.24, 600, 0.35, 0, 0.6); this.tone(140, 55, 0.22, 'sine', 0.2); break;
+      case 'thrust': this.noise(0.09, 1500, 0.22, 0, 1.5); this.tone(620, 300, 0.08, 'square', 0.035); break;
+      case 'bow': this.tone(240, 170, 0.18, 'triangle', 0.11); this.tone(480, 420, 0.1, 'sine', 0.05); this.noise(0.05, 3000, 0.1, 0, 2); break;
+      case 'thunder': this.noise(0.3, 300, 0.35, 0, 0.6); this.tone(90, 40, 0.3, 'sawtooth', 0.08); for (let i = 0; i < 3; i++) this.noise(0.03, 3500, 0.2, 0.04 + i * 0.05, 3); break;
+      // голоса магии
+      case 'fire': this.noise(0.35, 900, 0.28, 0, 0.5); this.tone(180, 380, 0.3, 'sawtooth', 0.035); break;
+      case 'frost': this.tone(1600, 1600, 0.25, 'sine', 0.06); this.tone(2400, 2400, 0.3, 'sine', 0.045, 0.05); this.noise(0.14, 5000, 0.08, 0, 2); break;
+      case 'zap': this.tone(900, 300, 0.12, 'square', 0.05); this.noise(0.1, 3500, 0.16, 0, 2); break;
+      case 'chime': this.tone(880, 880, 0.3, 'sine', 0.05); this.tone(1320, 1320, 0.35, 'sine', 0.04, 0.08); break;
+      case 'wind': this.noise(0.5, 800, 0.2, 0, 0.3); this.noise(0.4, 1600, 0.08, 0.1, 0.5); break;
+      case 'blades': [1400, 1760, 2100].forEach((f, i) => this.tone(f, f * 1.02, 0.35, 'sine', 0.035, i * 0.06)); break;
       case 'hit': this.noise(0.1, 900, 0.4); this.tone(220, 70, 0.12, 'square', 0.12); break;
       case 'pickup': this.tone(660, 990, 0.07, 'square', 0.07); this.tone(990, 1320, 0.08, 'square', 0.06, 0.06); break;
       case 'hurt': this.tone(260, 60, 0.28, 'sawtooth', 0.16); this.noise(0.12, 600, 0.3); break;
@@ -97,6 +144,47 @@ class AudioSystem {
       default: break;
     }
   }
+
+  /** Гимн: заиграть (фоновая музыка замолкает) или, если уже играет, остановить. Возвращает: играет ли теперь. */
+  toggleAnthem(): boolean {
+    if (this.anthem) { this.stopAnthem(); return false; }
+    if (!this.ctx || !this.master) return false;
+    const ctx = this.ctx, gain = ctx.createGain(), beat = 60 / ANTHEM.bpm, t0 = ctx.currentTime + 0.1;
+    gain.gain.value = 1; gain.connect(this.master);
+    const voice = (f: number, at: number, dur: number, type: OscillatorType, vol: number): void => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.exponentialRampToValueAtTime(vol, at + 0.04);
+      g.gain.setValueAtTime(vol, at + Math.max(0.05, dur - 0.08));
+      g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+      o.connect(g); g.connect(gain); o.start(at); o.stop(at + dur + 0.05);
+    };
+    let t = t0;
+    for (const [note, beats] of ANTHEM.melody) {
+      const f = freq(note), dur = beats * beat;
+      voice(f, t, dur * 0.95, 'triangle', 0.16);
+      voice(f / 2, t, dur * 0.95, 'sawtooth', 0.025);
+      t += dur;
+    }
+    ANTHEM.bass.forEach((note, i) => voice(freq(note), t0 + beat + i * 4 * beat, 4 * beat * 0.95, 'sine', 0.14));
+    const resume = this.musicMode;
+    this.music('off');
+    this.anthem = { gain, timer: window.setTimeout(() => this.stopAnthem(), (t - t0 + 0.4) * 1000), resume };
+    return true;
+  }
+
+  /** Остановить гимн (если играет) и вернуть прежнюю музыку. */
+  stopAnthem(): void {
+    const a = this.anthem;
+    if (!a) return;
+    this.anthem = null;
+    window.clearTimeout(a.timer);
+    a.gain.disconnect();
+    this.music(a.resume);
+  }
+
+  get anthemPlaying(): boolean { return this.anthem !== null; }
 
   // ---------- музыка: тихий генератор мелодий ----------
   music(mode: 'calm' | 'tense' | 'off'): void {

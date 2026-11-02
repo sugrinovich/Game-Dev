@@ -1,16 +1,18 @@
 import Phaser from 'phaser';
 import { TEXTURES } from '../configs/assets';
-import { CANVAS_SCALE, COLORS, GAME, GLINT_EVERY, SCENES } from '../configs/game';
+import { CANVAS_SCALE, COLORS, GAME, SCENES } from '../configs/game';
 import { LOCATIONS, ROOM_IDS } from '../configs/items';
-import { ENEMY_TYPES } from '../configs/characters';
+import { ENEMY_TYPES, type EnemyTypeId } from '../configs/characters';
 import { ensureArrowTexture } from '../characters/Skeleton';
-import { PText, startGlints } from '../ui/PText';
+import { PText } from '../ui/PText';
 import { drawDiamond, drawPlate, UI } from '../ui/Panel';
-import { ARENA_SIZE, arenaGroundKey, castleGroundJobs, castleFrontJobs, castleTextureJobs, HALL_GROUND_KEY, HALL_SIZE, ROOM_SIZE, roomGroundKey } from '../systems/CastleArt';
+import { makePixelFonts, WORLD_FONTS } from '../ui/PixelFont';
+import { arenaJobs, castleGroundJobs, castleFrontJobs, castleTextureJobs, HALL_GROUND_KEY, HALL_SIZE, ROOM_SIZE, roomGroundKey } from '../systems/CastleArt';
 import { Effects } from '../systems/Effects';
 import { heroSheetJobs, STARTER_OUTFIT } from '../systems/HeroArt';
 import { effectTextureJobs } from '../systems/MobArt';
 import { iconTextureJobs } from '../systems/IconArt';
+import { spellTextureJobs } from '../systems/SpellArt';
 import { hallTextureJobs } from '../systems/HallModels';
 import { audio } from '../systems/Sfx';
 import { addTitleLogo, makeTitleBasics, SiegeBackdrop, siegeTextureJobs, TITLE_DEPTH } from '../systems/TitleArt';
@@ -19,12 +21,23 @@ const W = GAME.width;
 const H = GAME.height;
 
 /**
- * Сколько миллисекунд за кадр отдавать на рисование текстур: остальное время — анимации заставки. HD-текстуры в 2,25 раза
- * больше прежних — бюджет 12 мс: анимация загрузки остаётся плавной, а ждать вдвое меньше, чем при 6 мс.
+ * Сколько миллисекунд за кадр отдавать на рисование текстур: остальное время — анимации заставки (кадр при 60 FPS —
+ * 16,7 мс, заставка рисуется за 2–3). Задание, которое не успеет в бюджет, ждёт следующего кадра (JOB_GUESS_MS).
  */
-const JOB_BUDGET_MS = 12;
+const JOB_BUDGET_MS = 14;
+/**
+ * Новое задание не начинается, если по времени прошлого задания этапа оно не успеет в бюджет кадра: иначе задание
+ * на 11 мс, начатое на 11-й мс, растягивало кадр вдвое — заставка дёргалась. Первое задание кадра выполняется всегда.
+ */
+const JOB_GUESS_MS = 4;
 /** Полоса-меч: начало клинка у гарды, середина клинка по высоте, длина клинка; раскалённый край в пикселях. */
 const SWORD = { x: 136, y: 124, len: 216, hot: 22 } as const;
+/**
+ * Полоса загрузки плавно догоняет настоящий прогресс (доля готовых заданий): за секунду проходит ease-долю отставания,
+ * но не медленнее minSpeed (доля полосы в секунду) — без рывков и остановок, то быстрее, то медленнее. Конец загрузки —
+ * когда полоса дошла до конца.
+ */
+const BAR = { ease: 3, minSpeed: 0.02 } as const;
 /** Сцена осады проявляется из темноты, когда её текстуры готовы (мс). */
 const BACKDROP_FADE_MS = 700;
 /** Как часто сменяется строка летописи или совета внизу (с). */
@@ -48,6 +61,15 @@ const TIPS = [
   'Казначейство добавляет монеты за каждого врага.',
 ];
 
+/**
+ * Чьи листы кадров рисуются при загрузке: враги открытых арен и Король Бездны. Остальные (огр арен «в разработке»)
+ * нарисуются сами, когда впервые понадобятся (ensureHeroSheet), — огр один занимал четверть загрузки.
+ */
+function preloadEnemies(): EnemyTypeId[] {
+  const open = LOCATIONS.filter((loc) => !loc.soon).flatMap((loc) => loc.mobs);
+  return [...new Set<EnemyTypeId>([...open, 'king'])];
+}
+
 /** Этап загрузки: подпись на экране и задания на отрисовку. */
 interface Stage { label: string; jobs: (() => void)[] }
 
@@ -61,7 +83,11 @@ export class PreloadScene extends Phaser.Scene {
   private stageIndex = 0;
   private jobsTotal = 0;
   private jobsDone = 0;
+  /** Сколько длилось прошлое задание (мс): по нему решаем, успеет ли следующее в этот кадр. */
+  private lastJobMs = JOB_GUESS_MS;
   private finished = false;
+  /** Сколько полосы показано (догоняет настоящий прогресс). */
+  private shown = 0;
   private leaving = false;
   private fx!: Effects;
   private sword!: Phaser.GameObjects.Graphics;
@@ -70,7 +96,6 @@ export class PreloadScene extends Phaser.Scene {
   private press!: PText;
   private story!: PText;
   private storyIndex = 0;
-  private sparkT = 0;
 
   constructor() {
     super({ key: SCENES.preload });
@@ -87,7 +112,6 @@ export class PreloadScene extends Phaser.Scene {
     this.sword = this.add.graphics().setDepth(d);
     this.edgeGlow = this.add.image(SWORD.x, SWORD.y, TEXTURES.glow).setTint(0xff8a2a).setBlendMode(Phaser.BlendModes.ADD).setScale(0.9, 0.5).setDepth(d + 1);
     this.status = new PText(this, W / 2, SWORD.y + 10, '', { ax: 0.5, color: COLORS.text, shine: true }).setDepth(d);
-    startGlints(this, GLINT_EVERY.menu);
     this.buildStory();
     this.press = new PText(this, W / 2, SWORD.y + 26, 'Нажмите любую клавишу', { ax: 0.5, color: COLORS.blade, shine: true }).setDepth(d).setAlpha(0);
 
@@ -105,11 +129,8 @@ export class PreloadScene extends Phaser.Scene {
         label: 'Мостим залы и арены', jobs: [
           ...castleGroundJobs(this, HALL_GROUND_KEY, HALL_SIZE.w, HALL_SIZE.h, 'hall'),
           ...castleFrontJobs(this, HALL_SIZE.w, HALL_SIZE.h, 'hall', null),
-          // арены: четыре сплошные стены
-          ...LOCATIONS.filter((loc) => !loc.soon).flatMap((loc) => [   // «скоро» — не готовим (их ещё не открыть)
-            ...castleGroundJobs(this, arenaGroundKey(loc.theme), ARENA_SIZE.w, ARENA_SIZE.h, loc.theme),
-            ...castleFrontJobs(this, ARENA_SIZE.w, ARENA_SIZE.h, loc.theme, null),
-          ]),
+          // арены — круглые колизеи; «скоро» — не готовим (их ещё не открыть)
+          ...LOCATIONS.filter((loc) => !loc.soon).flatMap((loc) => arenaJobs(this, loc.theme)),
           // комнаты тронного зала: покои, кузня, целебница — со своими стенами и проёмом в зал
           ...ROOM_IDS.flatMap((id) => castleGroundJobs(this, roomGroundKey(id), ROOM_SIZE.w, ROOM_SIZE.h, id)),
           ...ROOM_IDS.flatMap((id) => castleFrontJobs(this, ROOM_SIZE.w, ROOM_SIZE.h, id, ROOM_SIZE.w / 2)),
@@ -117,16 +138,17 @@ export class PreloadScene extends Phaser.Scene {
       },
       // заранее — стартовая одежда; другие наборы рисуются при переодевании (около 30 мс, в окне инвентаря — на паузе)
       { label: 'Куём доспехи героя', jobs: heroSheetJobs(this, STARTER_OUTFIT) },
-      { label: 'Собираем орду Бездны', jobs: Object.values(ENEMY_TYPES).flatMap((e) => heroSheetJobs(this, e.outfit, e.body)) },
+      { label: 'Собираем орду Бездны', jobs: preloadEnemies().flatMap((id) => heroSheetJobs(this, ENEMY_TYPES[id].outfit, ENEMY_TYPES[id].body)) },
       { label: 'Чеканим монеты и гербы', jobs: iconTextureJobs(this) },
       { label: 'Закаляем клинки', jobs: effectTextureJobs(this) },
-      { label: 'Точим стрелы', jobs: [() => ensureArrowTexture(this)] },
+      { label: 'Заговариваем свитки', jobs: spellTextureJobs(this) },
+      { label: 'Точим стрелы', jobs: [() => ensureArrowTexture(this), ...WORLD_FONTS.map((key) => () => makePixelFonts(this, [key]))] },
     ];
   }
 
   /** Сцена осады готова: появляется под логотипом, из темноты. */
   private showBackdrop(): void {
-    new SiegeBackdrop(this);
+    new SiegeBackdrop(this);   // живая сцена: орда идёт, лучники стреляют, Короли мечут огонь (текстуры уже готовы)
     const cover = this.add.rectangle(0, 0, W, H, GAME.backgroundColor).setOrigin(0, 0).setDepth(TITLE_DEPTH.vignette - 1);
     this.tweens.add({ targets: cover, alpha: 0, duration: BACKDROP_FADE_MS, ease: 'Sine.easeOut', onComplete: () => cover.destroy() });
   }
@@ -156,17 +178,25 @@ export class PreloadScene extends Phaser.Scene {
     this.fx.update(dt);
     if (this.finished) return;
     const start = performance.now();
-    while (this.stageIndex < this.stages.length && performance.now() - start < JOB_BUDGET_MS) {
+    let ran = false;
+    while (this.stageIndex < this.stages.length) {
+      const elapsed = performance.now() - start;
+      if (ran && elapsed + this.lastJobMs > JOB_BUDGET_MS) break;
       const stage = this.stages[this.stageIndex]!;
       const job = stage.jobs.shift();
-      if (job) { job(); this.jobsDone++; } else this.stageIndex++;
+      if (!job) { this.stageIndex++; this.lastJobMs = JOB_GUESS_MS; continue; }
+      const t0 = performance.now();
+      job();
+      this.lastJobMs = performance.now() - t0;
+      this.jobsDone++;
+      ran = true;
     }
-    const v = this.jobsTotal ? this.jobsDone / this.jobsTotal : 1;
-    this.drawSword(v);
-    this.forgeSparks(dt, v);
-    const stage = this.stages[this.stageIndex];
-    if (stage) { this.status.setText(`${stage.label}… ${Math.round(v * 100)}%`); return; }
-    this.finish();
+    const target = this.jobsTotal ? this.jobsDone / this.jobsTotal : 1;
+    if (this.stageIndex >= this.stages.length && this.shown >= target) { this.finish(); return; }
+    this.shown = Math.min(target, this.shown + Math.max(BAR.minSpeed * dt, (target - this.shown) * (1 - Math.exp(-BAR.ease * dt))));
+    this.drawSword(this.shown);
+    const stage = this.stages[Math.min(this.stageIndex, this.stages.length - 1)]!;
+    this.status.setText(`${stage.label}… ${Math.floor(this.shown * 100)}%`);
   }
 
   /** Всё готово: клинок выкован, ждём нажатия (заодно браузер разрешает звук). */
@@ -191,7 +221,7 @@ export class PreloadScene extends Phaser.Scene {
   /** Меч-полоса: тёмная заготовка, выкованная сталь с долом, раскалённый край; гарда, рукоять, навершие. */
   private drawSword(v: number): void {
     const g = this.sword, { x, y, len, hot } = SWORD;
-    const forged = Math.round(len * Phaser.Math.Clamp(v, 0, 1));
+    const forged = len * Phaser.Math.Clamp(v, 0, 1);   // без округления: клинок растёт плавно, а не по пикселю
     g.clear();
     g.fillStyle(UI.ironDark, 1).fillRect(x - 1, y - 3, len + 2, 7).fillTriangle(x + len, y - 3, x + len + 9, y + 0.5, x + len, y + 4);
     g.fillStyle(0x2a2a34, 1).fillRect(x, y - 2, len, 5);
@@ -217,15 +247,5 @@ export class PreloadScene extends Phaser.Scene {
     for (let i = 0; i < 4; i++) g.fillRect(x - 13 + i * 2, y - 1, 1, 3);
     drawDiamond(g, x - 18, y);
     this.edgeGlow.setPosition(x + forged, y);
-  }
-
-  /** Искры летят из-под молота у раскалённого края. */
-  private forgeSparks(dt: number, v: number): void {
-    if (v >= 1 || (this.sparkT -= dt) > 0) return;
-    this.sparkT = 0.07;
-    this.fx.burst({
-      x: SWORD.x + Math.round(SWORD.len * v), y: SWORD.y, count: 2, speed: [20, 70], angle: [-Math.PI, 0], life: [0.25, 0.5],
-      size: [1, 2], tints: [0xfff6c0, 0xffd060, 0xff8a2a], gravity: 160, blend: Phaser.BlendModes.ADD, depth: TITLE_DEPTH.ui + 2,
-    });
   }
 }

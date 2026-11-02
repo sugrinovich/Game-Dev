@@ -3,13 +3,17 @@ import { ENEMY_TYPES, type EnemyConfig } from '../configs/characters';
 import { SETTINGS } from '../configs/settings';
 import type { Arena, Point } from '../types';
 import { Mob, type MobVariant } from './Mob';
-import { SLASH_ORIGIN } from '../systems/MobArt';
+import { inStrikeZone } from '../systems/Effects';
+import { fitSlash, SLASH_ORIGIN } from '../systems/MobArt';
 
-/** Мечник: дистанция удара, замах (успейте отойти), пауза между ударами. */
-const WARRIOR = { reach: 20, windup: 0.4, recover: 0.35, cooldown: 1.2 } as const;
+/**
+ * Мечник: дальность и полудуга удара — урон везде от мечника до дуги следа (она растянута на reach), замах (успейте
+ * отойти), пауза после удара и между ударами.
+ */
+const WARRIOR = { reach: 34, arc: 1, windup: 0.4, recover: 0.35, cooldown: 1.2 } as const;
 /** Лучник: держит дистанцию, целится и стреляет. Скорости — пиксели в секунду. */
 const ARCHER = { keepMin: 70, keepMax: 130, range: 200, aim: 0.7, cooldown: 2.4, strafe: 0.6, arrowSpeed: 150, arrowLife: 1.8, arrowHeight: 12 } as const;
-const ARROW_TEXTURE = 'arrow';
+export const ARROW_TEXTURE = 'arrow';
 
 /** Скелет — та же кукла, что и герой, с телом skeleton (вещи — в ENEMY_TYPES). */
 abstract class SkeletonMob extends Mob {
@@ -28,6 +32,8 @@ export class SkeletonWarrior extends SkeletonMob {
   private mode: WarriorState = 'chase';
   private timer = 0;
   private cooldown = 0.6;
+  /** Куда направлен удар (радианы) — задано в момент замаха. */
+  private aim = 0;
 
   constructor(scene: Phaser.Scene, x: number, y: number, arena: Arena, variant: MobVariant = {}) {
     super(scene, x, y, ENEMY_TYPES.skeleton, arena, variant);
@@ -46,6 +52,8 @@ export class SkeletonWarrior extends SkeletonMob {
         this.mode = 'windup'; this.timer = WARRIOR.windup;
         this.setTint(0xff9a8a);
         this.arena.playSfx('warn');
+        // направление удара — в момент замаха (зона урона — inStrikeZone, на экране не рисуется)
+        this.aim = Math.atan2(dy, dx);
       }
     } else if (this.mode === 'windup') {
       this.timer -= dt;
@@ -63,15 +71,15 @@ export class SkeletonWarrior extends SkeletonMob {
     }
   }
 
+  /** Удар в зону, показанную замахом: урон — если герой в ней (от мечника до края волны). */
   private slash(target: Point): void {
-    const dx = target.x - this.x, dy = target.y - this.y;
-    const l = Math.hypot(dx, dy) || 1;
+    const a = this.aim;
     this.arena.playSfx('swing');
-    const fx = this.scene.add.sprite(this.x + (dx / l) * 4, this.y - 9 + (dy / l) * 4, 'slash', '0')
-      .setOrigin(SLASH_ORIGIN.x, SLASH_ORIGIN.y).setRotation(Math.atan2(dy, dx)).setDepth(this.y + 30).setTint(0xd8d0ff).setScale(0.85);
-    fx.play('slash');
+    const fx = this.scene.add.sprite(this.x + Math.cos(a) * 4, this.y - 9 + Math.sin(a) * 4, 'fx_slash', '0')
+      .setOrigin(SLASH_ORIGIN.x, SLASH_ORIGIN.y).setRotation(a).setDepth(this.y + 30).setTint(0xd8d0ff);
+    fitSlash(fx, WARRIOR.reach, WARRIOR.arc, 4).play('fx_slash');
     fx.once(Phaser.Animations.Events.ANIMATION_COMPLETE, () => fx.destroy());
-    if (l <= WARRIOR.reach + SETTINGS.player.radius) this.arena.hurtPlayer(this.config.damage, this.x, this.y);
+    if (inStrikeZone(target.x, target.y, this.x, this.y, a, WARRIOR.reach, WARRIOR.arc, SETTINGS.player.radius)) this.arena.hurtPlayer(this.config.damage, this.x, this.y);
   }
 }
 

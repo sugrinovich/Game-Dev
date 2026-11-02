@@ -1,15 +1,15 @@
 import Phaser from 'phaser';
 import { SCENES } from '../configs/game';
-import { makePixelFonts } from '../ui/PixelFont';
+import { LOADING_FONTS, makePixelFonts } from '../ui/PixelFont';
 
-/** Рисует шрифты игры (файлов нет) — чтобы экран загрузки уже мог писать текст. */
+/** Рисует шрифты экрана загрузки (файлов нет) — чтобы он сразу мог писать текст; шрифты мира — этапом загрузки. */
 export class BootScene extends Phaser.Scene {
   constructor() {
     super({ key: SCENES.boot });
   }
 
   create(): void {
-    makePixelFonts(this);
+    makePixelFonts(this, LOADING_FONTS);
     this.scene.start(SCENES.preload);
   }
 }

@@ -18,10 +18,8 @@ export type CastleTheme = 'hall' | 'courtyard' | 'crypt' | 'forge' | 'smithy' | 
 export const CASTLE_BOUNDS = { side: 8, top: 88, bottom: 24 } as const;
 /** Четыре стены у всех карт (зал, его комнаты, арены): толщина боковой стены — она же граница по бокам. */
 export const ROOM_BOUNDS = { ...CASTLE_BOUNDS, side: 28 } as const;
-/** Разлом Бездны на полу арены (снизу посередине, up — от нижнего края карты): здесь герой приходит и уходит в замок (модель — ARENA_RIFTS.exit). */
-export const ARENA_RIFT = { up: 80 } as const;
-/** Круг ристалища на полу арены: середина (от середины карты вниз) и полуоси — выше разлома, не задевает его. */
-const ARENA_RING = { dy: 0, rx: 170, ry: 110 } as const;
+/** Разлом Бездны на полу арены (снизу посередине, up — от нижнего края круга): здесь герой приходит и уходит в замок (модель — ARENA_RIFTS.exit). */
+export const ARENA_RIFT = { up: 78 } as const;
 /**
  * Мягкость пола: шов между плитами — тон плиты темнее на столько (а не почти чёрный), доля плит с трещиной
  * и с камешком, прозрачность трещин. Мелкие контрастные штрихи на каждой плите заставляли пол рябить.
@@ -30,8 +28,8 @@ const ARENA_RING = { dy: 0, rx: 170, ry: 110 } as const;
 const FLOOR_SOFT = { joint: -0.32, cracks: 0.12, pebbles: 0.06, crackAlpha: '40', engraved: 0.05 } as const;
 /** Размеры карт: зал замка, арена и комната зала (пол рисуется заранее, при загрузке). */
 export const HALL_SIZE = { w: 640, h: 496 } as const;
-/** Арена просторная: на дальних волнах врагов много. */
-export const ARENA_SIZE = { w: 800, h: 512 } as const;
+/** Арена — круглый колизей (ниже, «колизей арены»): просторная, на дальних волнах врагов много. */
+export const ARENA_SIZE = { w: 960, h: 790 } as const;
 export const ROOM_SIZE = { w: 480, h: 280 } as const;
 export const HALL_GROUND_KEY = 'base-ground';
 export function arenaGroundKey(theme: CastleTheme): string { return `arena-ground-${theme}`; }
@@ -46,8 +44,6 @@ const PALETTES = {
   apothecary: { floor: ['#3a4440', '#404a45', '#47524b'], wall: '#2e3836', trim: '#9ab07a', cloth: '#35553e', light: '#9ee0a0' },
 } as const;
 type Palette = (typeof PALETTES)[CastleTheme];
-/** Арены: на полу круг ристалища и герб. */
-const ARENA_THEMES: readonly CastleTheme[] = ['courtyard', 'crypt', 'forge'];
 /** Двери тронного зала в задней стене (x середины проёма, пиксели игры): слева от трона — целебница, справа — кузня. */
 export const HALL_DOOR_X = [200, 440] as const;
 /** Чёрный костёр посреди тронного зала — проход к аренам: середина и радиус разлома в полу вокруг него. */
@@ -250,40 +246,43 @@ const hash2 = hash;
 // ---------------- пол ----------------
 /** Детальность HD-текстуры пола: крупные плиты не требуют больше, а пол арены 800x512 при 4 весил бы 26 МБ. */
 const FLOOR_RES = 3;
-/** Пол: плиты с фаской, трещинами и мхом, ковёр (в зале) или круг арены, герб, тени от стен. Одна плоская текстура на тему. */
-function paintFloor(scene: Phaser.Scene, key: string, w: number, h: number, theme: CastleTheme): void {
+/** Сколько рядов плит пола рисуется за одно задание загрузки (весь пол зала сразу — рывок около 60 мс). */
+const FLOOR_ROWS = 6;
+/**
+ * Пол зала и комнат: плиты с фаской, трещинами и мхом, ковёр и герб (в зале), тени от стен. Одна плоская текстура на
+ * тему — по заданиям: холст, плиты полосами по FLOOR_ROWS рядов, затем ковёр и тени. Пусто, если пол уже готов.
+ */
+function floorJobs(scene: Phaser.Scene, key: string, w: number, h: number, theme: CastleTheme): (() => void)[] {
+  if (scene.textures.exists(key)) return [];
   const p = PALETTES[theme];
-  hdTexture(scene, key, w, h, (c) => {
+  let tex: Phaser.Textures.CanvasTexture | null = null, c: CanvasRenderingContext2D | null = null;
+  const jobs: (() => void)[] = [() => {
+    tex = readableCanvas(scene, key, w * FLOOR_RES, h * FLOOR_RES);
+    if (!tex) return;
+    c = tex.getContext(); c.imageSmoothingEnabled = true; c.scale(FLOOR_RES, FLOOR_RES);
     rect(c, tone(p.floor[0], FLOOR_SOFT.joint), 0, 0, w, h);
-    for (let y = 80; y < h; y += TILE.h) for (let x = 0; x < w + TILE.w; x += TILE.w) {
+  }];
+  for (let y0 = 80; y0 < h; y0 += TILE.h * FLOOR_ROWS) jobs.push(() => {
+    if (!c) return;
+    for (let y = y0; y < Math.min(h, y0 + TILE.h * FLOOR_ROWS); y += TILE.h) for (let x = 0; x < w + TILE.w; x += TILE.w) {
       const tx = x - (Math.floor(y / TILE.h) % 2) * (TILE.w / 2);
       paintTile(c, tx, y, p.floor[Math.floor(hash2(x, y, 73) * p.floor.length)]!, x, y, p);
     }
+  });
+  jobs.push(() => {
+    if (!c || !tex) return;
     if (theme === 'hall') {
       paintCarpet(c, w / 2, HALL_FIRE.y - HALL_FIRE.rift + 6, p);
       paintRift(c, HALL_FIRE.x, HALL_FIRE.y, HALL_FIRE.rift);
-    } else if (!ARENA_THEMES.includes(theme)) {
-      paintRoomFloor(c, w, h, theme);
-      paintWallShadows(c, w, h);
-      return;
-    } else {
-      c.strokeStyle = p.trim; c.lineWidth = 2;
-      c.beginPath(); c.ellipse(w / 2, h / 2 + ARENA_RING.dy, ARENA_RING.rx, ARENA_RING.ry, 0, 0, Math.PI * 2); c.stroke();
-      c.lineWidth = 1; c.beginPath(); c.ellipse(w / 2, h / 2 + ARENA_RING.dy, ARENA_RING.rx - 8, ARENA_RING.ry - 6, 0, 0, Math.PI * 2); c.stroke();
-      for (let i = 0; i < 8; i++) {
-        const a = i * Math.PI / 4, x = w / 2 + Math.cos(a) * (ARENA_RING.rx - 4), y = h / 2 + ARENA_RING.dy + Math.sin(a) * (ARENA_RING.ry - 3);
-        rect(c, p.trim, Math.round(x) - 2, Math.round(y) - 2, 4, 4); px(c, '#ffffff55', Math.round(x) - 2, Math.round(y) - 2);
-      }
-      if (theme === 'forge') for (let i = 0; i < 40; i++) {
-        const x = 40 + Math.floor(hash2(i, 1, 99) * (w - 80)), y = 100 + Math.floor(hash2(i, 2, 99) * (h - 140));
-        rect(c, '#ff6a2a66', x, y, 3 + (i % 4), 1); px(c, '#ffc06088', x + 1, y);
-      }
-    }
-    if (theme === 'hall') shield(c, w / 2 - 9, 140, p.cloth);
-    else shield(c, w / 2 - 9, h / 2 - 12, p.cloth);   // разлом-выход — 3D-модель (ARENA_RIFTS.exit), ставится сценой
-    edgeShade(c, w, h);
+      shield(c, w / 2 - 9, 140, p.cloth);
+      edgeShade(c, w, h);
+    } else paintRoomFloor(c, w, h, theme);
     paintWallShadows(c, w, h);
-  }, FLOOR_RES);
+    (tex.customData as { resolution?: number }).resolution = FLOOR_RES;
+    tex.refresh(); tex.setFilter(Phaser.Textures.FilterMode.LINEAR);
+    tex = null; c = null;
+  });
+  return jobs;
 }
 
 /** Тени стен на полу: чёткая полоса под задней стеной; у боковых стен — справа от левой шире, слева от правой уже. */
@@ -665,11 +664,6 @@ function frontWallModel(w: number, h: number, gateX: number | null, p: Palette):
 
 function wallKey(key: string, part: 'back' | 'left' | 'right'): string { return `${key}-wall-${part}`; }
 
-/** Рисует текстуру, только если её ещё нет. */
-function once(scene: Phaser.Scene, key: string, paint: () => void): () => void {
-  return () => { if (!scene.textures.exists(key)) paint(); };
-}
-
 /** 3D-модель целиком в новую текстуру (w x h пикселей игры), по полосам. */
 function modelTextureJobs(scene: Phaser.Scene, key: string, w: number, h: number, anchor: { x: number; y: number }, model: () => Model): (() => void)[] {
   return hiresTextureJobs(scene, key, w, h, (ctx) => drawModelJobs(ctx, 0, 0, w, h, anchor, model));
@@ -685,7 +679,7 @@ export function castleGroundJobs(scene: Phaser.Scene, key: string, w: number, h:
       ...drawModelJobs(ctx, 0, 0, w, WALL.texH, { x: 0, y: WALL.floorY }, () => backWallModel(w, theme)),
     ]),
     ...[true, false].flatMap((left) => modelTextureJobs(scene, wallKey(key, left ? 'left' : 'right'), ROOM_BOUNDS.side, h, { x: 0, y: 0 }, () => sideWallModel(w, h, left, p))),
-    once(scene, key, () => paintFloor(scene, key, w, h, theme)),
+    ...floorJobs(scene, key, w, h, theme),
   ];
 }
 
@@ -774,4 +768,265 @@ export function addCastleAmbience(scene: Phaser.Scene, w: number, theme: CastleT
       scene.tweens.add({ targets: mote, y: mote.y - Phaser.Math.Between(8, 20), x: mote.x + Phaser.Math.Between(-6, 6), duration: Phaser.Math.Between(3000, 6000), yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
     }
   });
+}
+
+// ---------------- колизей арены ----------------
+/**
+ * Арена — круглый рыцарский колизей. Пол — круг (камера под 45°, поэтому на экране — эллипс: ry = rx · sin наклона),
+ * cx, cy — его середина на карте. walk — где можно ходить: круг меньше пола (kx, ky — доли полуосей) и выше на up
+ * пикселей — у дальней стены зазор, а у ближней герой не уходит ногами за парапет.
+ */
+export const ARENA_OVAL = { cx: ARENA_SIZE.w / 2, cy: 450, rx: 420, ry: Math.round(420 * Math.sin(CAMERA_PITCH)), walk: { kx: 0.96, ky: 0.93, up: 12 } } as const;
+/**
+ * Колизей вокруг пола (высоты — единицы модели, на экране они короче в cos наклона): подиум высотой podium с дорожкой
+ * шириной cap и золотой каймой; над ним rows рядов трибун (каждый на step дальше и на rise выше); поверху — аркада
+ * высотой arcade с arches арками по кругу и знамёнами на каждой banner-й опоре; block, course — камни кладки.
+ */
+const COLOSSEUM = { podium: 44, cap: 6, rows: 5, step: 12, rise: 11, arcade: 40, arches: 44, banner: 5, block: 22, course: 11 } as const;
+/**
+ * Текстуры колизея: детальность res (пол 960x790 при 4 весил бы 48 МБ), полосы по strip пикселей карты — каждая
+ * рисуется и уходит в видеокарту отдельно (нет одного долгого рывка на экране загрузки); front — с какой доли ry ниже
+ * середины начинается слой ближней стены поверх героя; mini — ширина картинки для мини-карты.
+ */
+const ARENA_ART = { res: 2.5, strip: 112, front: 0.35, mini: 80 } as const;
+const LIFT = Math.cos(CAMERA_PITCH), FLAT = Math.sin(CAMERA_PITCH);
+const O = ARENA_OVAL, C = COLOSSEUM;
+/** Радиусы: край пола, внешний край дорожки подиума, внешняя стена с аркадой; высота верхнего ряда трибун. */
+const R_FLOOR = O.rx, R_CAP = O.rx + C.cap, R_OUT = R_CAP + C.rows * C.step, Z_TOP = C.podium + C.rows * C.rise;
+/** Верх слоя ближней стены (кратно 2 — полосы текстур ложатся на целые пиксели холста). */
+const FRONT_Y = Math.floor((O.cy + O.ry * ARENA_ART.front) / 2) * 2;
+
+/** Точка кольца радиуса r на высоте z, угол a: 0 — вправо, π/2 — к камере, -π/2 — дальняя сторона. */
+function ringAt(r: number, z: number, a: number): [number, number] {
+  return [O.cx + Math.cos(a) * r, O.cy + Math.sin(a) * r * FLAT - z * LIFT];
+}
+function ringPath(c: CanvasRenderingContext2D, r: number, z: number, from: number, to: number, back = false): void {
+  c.ellipse(O.cx, O.cy - z * LIFT, r, r * FLAT, 0, from, to, back);
+}
+/** Полный эллипс кольца r на высоте z (залить — диск: пол, ряд трибун). */
+function fillRing(c: CanvasRenderingContext2D, fill: string | CanvasGradient, r: number, z: number): void {
+  c.fillStyle = fill; c.beginPath(); ringPath(c, r, z, 0, Math.PI * 2); c.fill();
+}
+/** Дальняя половина стены-кольца r от высоты z0 до z1 (грань смотрит в середину, на камеру). */
+function backBand(c: CanvasRenderingContext2D, r: number, z0: number, z1: number): void {
+  c.beginPath(); ringPath(c, r, z1, Math.PI, Math.PI * 2); ringPath(c, r, z0, Math.PI * 2, Math.PI, true); c.closePath();
+}
+/**
+ * Свет на грани кольца по x (у кольца грань в точке x всегда одна): лицом к камере — светлее, к краям — темнее;
+ * свет слева — светлее грань, что смотрит влево (inward — грань дальней стороны смотрит в середину).
+ */
+function ringShade(c: CanvasRenderingContext2D, base: string, r: number, inward: boolean, k = 0.5): CanvasGradient {
+  const g = c.createLinearGradient(O.cx - r, 0, O.cx + r, 0);
+  for (let i = 0; i <= 12; i++) {
+    const t = i / 12, cos = t * 2 - 1, facing = Math.sqrt(Math.max(0, 1 - cos * cos));
+    g.addColorStop(t, tone(base, (facing - 0.75) * k + (inward ? cos : -cos) * k * 0.3));
+  }
+  return g;
+}
+/** Кладка на половине стены-кольца r от z0 до z1: ряды (тёмный шов, под ним светлая кромка) и вертикальные швы вразбежку. */
+function ringMasonry(c: CanvasRenderingContext2D, r: number, z0: number, z1: number, p: Palette, back: boolean): void {
+  const [a0, a1] = back ? [Math.PI, Math.PI * 2] : [0, Math.PI], da = C.block / r;
+  c.lineWidth = 0.45;
+  for (let z = z1, row = 0; z > z0 - 0.01; z -= C.course, row++) {
+    c.strokeStyle = tone(p.wall, -0.6); c.beginPath(); ringPath(c, r, z, a0, a1); c.stroke();
+    c.strokeStyle = `${tone(p.wall, 0.5)}66`; c.beginPath(); ringPath(c, r, z - 0.9, a0, a1); c.stroke();
+    const zl = Math.max(z0, z - C.course);
+    if (zl >= z) continue;
+    c.strokeStyle = tone(p.wall, -0.55); c.beginPath();
+    for (let a = a0 + (row % 2) * da / 2; a < a1; a += da) {
+      const [x0, y0] = ringAt(r, z, a), [x1, y1] = ringAt(r, zl, a);
+      c.moveTo(x0, y0); c.lineTo(x1, y1);
+    }
+    c.stroke();
+  }
+}
+
+/** Ночное небо над колизеем: тьма сверху, у аркады — лиловая дымка Бездны; звёзды. */
+function paintArenaSky(c: CanvasRenderingContext2D, p: Palette, w: number, h: number): void {
+  const g = c.createLinearGradient(0, 0, 0, O.cy);
+  g.addColorStop(0, '#07060f'); g.addColorStop(0.7, '#150f2a'); g.addColorStop(1, `${p.light}55`);
+  c.fillStyle = '#07060f'; c.fillRect(0, 0, w, h);
+  c.fillStyle = g; c.fillRect(0, 0, w, O.cy);
+  for (let i = 0; i < 90; i++) {
+    const x = hash2(i, 3, 501) * w, y = hash2(i, 4, 501) * O.cy * 0.9, r = 0.25 + hash2(i, 5, 501) * 0.55;
+    softEllipse(c, `rgba(235, 228, 255, ${0.35 + hash2(i, 6, 501) * 0.5})`, x, y, r, r);
+  }
+}
+
+/** Аркада поверх трибун: стена с арками (сквозь них — небо), карниз, знамёна на опорах. */
+function paintArcade(c: CanvasRenderingContext2D, p: Palette): void {
+  const z0 = Z_TOP, z1 = Z_TOP + C.arcade, base = tone(p.wall, 0.12);
+  backBand(c, R_OUT, z0, z1); c.fillStyle = ringShade(c, base, R_OUT, true); c.fill();
+  const step = (Math.PI * 2) / C.arches, half = step * 0.3, spring = z0 + C.arcade * 0.45, apex = z0 + C.arcade * 0.78;
+  for (let k = 0; k < C.arches; k++) {
+    const a = Math.PI + (k + 0.5) * step;
+    if (a >= Math.PI * 2) continue;
+    // проём: от пола аркады вверх, сверху — полукруглая арка
+    c.beginPath();
+    let [x, y] = ringAt(R_OUT, z0 + 3, a - half); c.moveTo(x, y);
+    for (let t = -1; t <= 1.001; t += 0.125) {
+      [x, y] = ringAt(R_OUT, spring + (apex - spring) * Math.sqrt(Math.max(0, 1 - t * t)), a + half * t); c.lineTo(x, y);
+    }
+    [x, y] = ringAt(R_OUT, z0 + 3, a + half); c.lineTo(x, y); c.closePath();
+    c.fillStyle = '#120d24'; c.fill();
+    c.strokeStyle = tone(base, -0.5); c.lineWidth = 0.6; c.stroke();
+    // знамя на опоре: ширина — как видна грань (к краям уже)
+    if (k % C.banner !== 2) continue;
+    const pa = a + step / 2, facing = -Math.sin(pa), bw = 4 * facing, [bx, by] = ringAt(R_OUT, z1 - 4, pa), len = 22 * LIFT;
+    if (facing < 0.2) continue;
+    poly(c, p.cloth, [[bx - bw, by], [bx + bw, by], [bx + bw, by + len], [bx, by + len + 3], [bx - bw, by + len]]);
+    c.strokeStyle = p.trim; c.lineWidth = 0.5; c.stroke();
+    rect(c, p.trim, bx - bw, by, bw * 2, 1);
+  }
+  // карниз: светлая кромка поверху, под ней тень
+  c.lineWidth = 1.4; c.strokeStyle = tone(base, 0.45); c.beginPath(); ringPath(c, R_OUT, z1, Math.PI, Math.PI * 2); c.stroke();
+  c.lineWidth = 0.7; c.strokeStyle = tone(base, -0.5); c.beginPath(); ringPath(c, R_OUT, z1 - 2, Math.PI, Math.PI * 2); c.stroke();
+}
+
+/** Трибуны (от верхнего ряда к нижнему), дорожка подиума и его грань с кладкой и золотой каймой; пол под плиты. */
+function paintStands(c: CanvasRenderingContext2D, p: Palette, w: number, h: number, detail: boolean): void {
+  paintArenaSky(c, p, w, h);
+  paintArcade(c, p);
+  const seat = tone(p.wall, 0.32), riser = tone(p.wall, 0.04);
+  for (let i = C.rows - 1; i >= 0; i--) {
+    const r = R_CAP + i * C.step, z = C.podium + (i + 1) * C.rise;
+    fillRing(c, seat, r + C.step, z);
+    backBand(c, r, z - C.rise, z); c.fillStyle = ringShade(c, riser, r, true); c.fill();
+    // край сиденья светлый, у подножия ряда — тень
+    c.lineWidth = 0.8; c.strokeStyle = tone(seat, 0.4); c.beginPath(); ringPath(c, r, z, Math.PI, Math.PI * 2); c.stroke();
+    c.lineWidth = 1.2; c.strokeStyle = 'rgba(6, 8, 16, 0.45)'; c.beginPath(); ringPath(c, r, z - C.rise + 0.6, Math.PI, Math.PI * 2); c.stroke();
+  }
+  fillRing(c, tone(p.wall, 0.45), R_CAP, C.podium);
+  backBand(c, R_FLOOR, 0, C.podium); c.fillStyle = ringShade(c, p.wall, R_FLOOR, true, 0.6); c.fill();
+  if (detail) ringMasonry(c, R_FLOOR, 0, C.podium - 4, p, true);
+  c.lineWidth = 1.6; c.strokeStyle = p.trim; c.beginPath(); ringPath(c, R_FLOOR, C.podium - 2.5, Math.PI, Math.PI * 2); c.stroke();
+  fillRing(c, tone(p.floor[0], FLOOR_SOFT.joint), R_FLOOR, 0);
+}
+
+/** Пол ристалища в полосе [y0, y1): плиты по кругу, два золотых кольца с заклёпками, герб, тень у подиума. */
+function paintArenaFloor(c: CanvasRenderingContext2D, p: Palette, y0: number, y1: number, detail: boolean): void {
+  c.save();
+  c.beginPath(); ringPath(c, R_FLOOR, 0, 0, Math.PI * 2); c.clip();
+  if (detail) for (let y = Math.max(0, Math.floor((y0 - TILE.h) / TILE.h) * TILE.h); y < y1; y += TILE.h) {
+    const dy = Math.min(Math.abs(y - O.cy), Math.abs(y + TILE.h - O.cy)), half = O.rx * Math.sqrt(Math.max(0, 1 - (dy / O.ry) ** 2)) + TILE.w;
+    if (Math.abs(y + TILE.h / 2 - O.cy) > O.ry + TILE.h) continue;
+    for (let x = Math.floor((O.cx - half) / TILE.w) * TILE.w; x < O.cx + half + TILE.w; x += TILE.w) {
+      const tx = x - (Math.floor(y / TILE.h) % 2) * (TILE.w / 2);
+      paintTile(c, tx, y, p.floor[Math.floor(hash2(x, y, 73) * p.floor.length)]!, x, y, p);
+    }
+  }
+  for (const [k, width] of [[0.92, 2], [0.88, 1], [0.42, 2], [0.38, 1]] as const) {
+    c.strokeStyle = p.trim; c.lineWidth = width; c.beginPath(); ringPath(c, R_FLOOR * k, 0, 0, Math.PI * 2); c.stroke();
+  }
+  for (let i = 0; i < 16; i++) {
+    const [x, y] = ringAt(R_FLOOR * 0.9, 0, (i * Math.PI) / 8);
+    rect(c, p.trim, x - 2, y - 1.5, 4, 3); rect(c, '#ffffff55', x - 2, y - 1.5, 4, 0.8);
+  }
+  shield(c, O.cx - 9, O.cy - 12, p.cloth);
+  // тень у подножия подиума: к краю круга пол темнее
+  c.save(); c.translate(O.cx, O.cy); c.scale(1, FLAT);
+  const g = c.createRadialGradient(0, 0, R_FLOOR * 0.7, 0, 0, R_FLOOR);
+  g.addColorStop(0, 'rgba(6, 8, 16, 0)'); g.addColorStop(1, 'rgba(6, 8, 16, 0.5)');
+  c.fillStyle = g; c.fillRect(-R_FLOOR, -R_FLOOR, R_FLOOR * 2, R_FLOOR * 2);
+  c.restore();
+  c.restore();
+}
+
+/**
+ * Ближняя половина подиума — видна сзади: наружная грань (смотрит на камеру) уходит вниз, во тьму под ближними
+ * трибунами; сверху — дорожка с каймой. Внутри края дорожки — прозрачно: там виден пол.
+ */
+function paintParapet(c: CanvasRenderingContext2D, p: Palette, w: number, h: number, detail: boolean): void {
+  const top = O.cy - C.podium * LIFT;
+  c.save();
+  c.beginPath(); c.rect(0, top, w, h - top); ringPath(c, R_FLOOR, C.podium, 0, Math.PI * 2); c.clip('evenodd');
+  const dark = c.createLinearGradient(0, top, 0, h);
+  dark.addColorStop(0, tone(p.wall, -0.55)); dark.addColorStop(1, '#05060b');
+  c.fillStyle = dark; c.fillRect(0, top, w, h - top);
+  // наружная грань: от дуги дорожки вниз до края карты
+  c.beginPath(); ringPath(c, R_CAP, C.podium, 0, Math.PI); c.lineTo(O.cx - R_CAP, h); c.lineTo(O.cx + R_CAP, h); c.closePath();
+  c.fillStyle = ringShade(c, tone(p.wall, -0.05), R_CAP, false, 0.6); c.fill();
+  if (detail) {
+    c.save(); c.clip();
+    for (let z = C.podium - C.course, row = 0; z > C.podium - 9 * C.course; z -= C.course, row++) {
+      c.lineWidth = 0.45; c.strokeStyle = tone(p.wall, -0.6); c.beginPath(); ringPath(c, R_CAP, z, 0, Math.PI); c.stroke();
+      c.beginPath();
+      for (let a = (row % 2) * (C.block / R_CAP) / 2; a < Math.PI; a += C.block / R_CAP) {
+        const [x0, y0] = ringAt(R_CAP, z + C.course, a), [x1, y1] = ringAt(R_CAP, z, a);
+        c.moveTo(x0, y0); c.lineTo(x1, y1);
+      }
+      c.stroke();
+    }
+    c.restore();
+  }
+  // тьма под ближними трибунами сгущается книзу
+  const fade = c.createLinearGradient(0, O.cy + O.ry, 0, h);
+  fade.addColorStop(0, 'rgba(5, 6, 11, 0)'); fade.addColorStop(1, 'rgba(5, 6, 11, 0.7)');
+  c.fillStyle = fade; c.fillRect(0, O.cy + O.ry, w, h - O.cy - O.ry);
+  // дорожка поверху и золотая кайма у внутреннего края
+  c.beginPath(); ringPath(c, R_CAP, C.podium, 0, Math.PI); ringPath(c, R_FLOOR, C.podium, Math.PI, 0, true); c.closePath();
+  c.fillStyle = tone(p.wall, 0.45); c.fill();
+  c.lineWidth = 1.2; c.strokeStyle = p.trim; c.beginPath(); ringPath(c, R_FLOOR + 1, C.podium, 0, Math.PI); c.stroke();
+  c.lineWidth = 0.6; c.strokeStyle = tone(p.wall, -0.6); c.beginPath(); ringPath(c, R_CAP, C.podium, 0, Math.PI); c.stroke();
+  c.restore();
+}
+
+/** Полосы [y0, y1) от from до to по ARENA_ART.strip пикселей карты. */
+function arenaStrips(from: number, to: number): [number, number][] {
+  const out: [number, number][] = [];
+  for (let y = from; y < to; y += ARENA_ART.strip) out.push([y, Math.min(to, y + ARENA_ART.strip)]);
+  return out;
+}
+function stripKey(key: string, layer: 'ground' | 'front', y0: number): string { return `${key}-${layer}-${y0}`; }
+export function arenaMiniKey(theme: CastleTheme): string { return `${arenaGroundKey(theme)}-mini`; }
+
+/** Холст полосы [y0, y1) карты при детальности R: рисовать в координатах карты, лишнее обрезано. */
+function stripCanvas(scene: Phaser.Scene, key: string, y0: number, y1: number, R: number): Phaser.Textures.CanvasTexture | null {
+  if (scene.textures.exists(key)) return null;
+  const tex = readableCanvas(scene, key, Math.round(ARENA_SIZE.w * R), Math.round((y1 - y0) * R));
+  if (!tex) return null;
+  const c = tex.getContext();
+  c.imageSmoothingEnabled = true;
+  c.setTransform(R, 0, 0, R, 0, -y0 * R);
+  c.beginPath(); c.rect(0, y0, ARENA_SIZE.w, y1 - y0); c.clip();
+  (tex.customData as { resolution?: number }).resolution = R;
+  return tex;
+}
+function finishStrip(tex: Phaser.Textures.CanvasTexture | null): void {
+  tex?.refresh(); tex?.setFilter(Phaser.Textures.FilterMode.LINEAR);
+}
+
+/**
+ * Колизей темы — задания для экрана загрузки: полосы пола с трибунами (каждая — три коротких задания и своя
+ * текстура), полосы ближней стены и картинка мини-карты.
+ */
+export function arenaJobs(scene: Phaser.Scene, theme: CastleTheme): (() => void)[] {
+  const key = arenaGroundKey(theme), p = PALETTES[theme], { w, h } = ARENA_SIZE, R = ARENA_ART.res, jobs: (() => void)[] = [];
+  for (const [y0, y1] of arenaStrips(0, h)) {
+    let tex: Phaser.Textures.CanvasTexture | null = null;
+    jobs.push(
+      () => { tex = stripCanvas(scene, stripKey(key, 'ground', y0), y0, y1, R); if (tex) paintStands(tex.getContext(), p, w, h, true); },
+      () => { if (tex) paintArenaFloor(tex.getContext(), p, y0, y1, true); },
+      () => { if (tex) paintParapet(tex.getContext(), p, w, h, true); finishStrip(tex); tex = null; },
+    );
+  }
+  for (const [y0, y1] of arenaStrips(FRONT_Y, h)) {
+    jobs.push(() => { const tex = stripCanvas(scene, stripKey(key, 'front', y0), y0, y1, R); if (tex) paintParapet(tex.getContext(), p, w, h, true); finishStrip(tex); });
+  }
+  jobs.push(() => {
+    const tex = stripCanvas(scene, arenaMiniKey(theme), 0, h, ARENA_ART.mini / w);
+    if (!tex) return;
+    const c = tex.getContext();
+    paintStands(c, p, w, h, false); paintArenaFloor(c, p, 0, h, false); paintParapet(c, p, w, h, false);
+    finishStrip(tex);
+  });
+  return jobs;
+}
+
+/** Ставит колизей: пол с трибунами — за всеми объектами, ближнюю стену — поверх героя. Нет текстур — рисует сразу. */
+export function addArena(scene: Phaser.Scene, theme: CastleTheme): void {
+  for (const job of arenaJobs(scene, theme)) job();
+  const key = arenaGroundKey(theme), { h } = ARENA_SIZE, k = 1 / ARENA_ART.res;
+  for (const [y0] of arenaStrips(0, h)) scene.add.image(0, y0, stripKey(key, 'ground', y0)).setOrigin(0, 0).setScale(k).setDepth(DEPTH.ground);
+  for (const [y0] of arenaStrips(FRONT_Y, h)) scene.add.image(0, y0, stripKey(key, 'front', y0)).setOrigin(0, 0).setScale(k).setDepth(h + 1);
 }

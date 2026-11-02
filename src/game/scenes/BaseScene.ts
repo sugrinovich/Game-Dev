@@ -1,12 +1,13 @@
 import Phaser from 'phaser';
 import { TEXTURES } from '../configs/assets';
 import { COLORS, DEPTH, SCENES } from '../configs/game';
-import { ARENA_FLOORS, CHEST, LOCATIONS, RATING_INFO, ROOM_IDS, ROOMS, type LocationId, type RoomId } from '../configs/items';
+import { ARENA_FLOORS, CHEST, chestCapacity, LOCATIONS, ROOM_IDS, ROOMS, type LocationId, type RoomId } from '../configs/items';
 import { AbyssSmoke } from '../systems/AbyssSmoke';
 import { audio } from '../systems/Sfx';
 import { PText } from '../ui/PText';
 import { addCastleAmbience, addCastleFront, addCastleGround, HALL_DOOR_X, HALL_FIRE, HALL_GROUND_KEY, HALL_SIZE, paintCastleGround, ROOM_BOUNDS, WALL_BANNER } from '../systems/CastleArt';
 import { CAT_DIAGONAL, CAT_FRAME, textureResolution } from '../systems/CastleModels';
+import { makePortraitTexture, PORTRAIT } from '../systems/PortraitArt';
 import { MapBounds } from '../systems/MapBounds';
 import { session, type Report } from '../state/Session';
 import { WorldScene } from './WorldScene';
@@ -25,6 +26,8 @@ const PILLARS = [[236, 176], [404, 176], [236, 338], [404, 338]] as const;
 const STANDARD_Y = (PILLARS[0][1] + PILLARS[2][1]) / 2;
 const STANDARDS = [[PILLARS[0][0], STANDARD_Y], [PILLARS[1][0], STANDARD_Y]] as const;
 const MERCHANT = { x: 178, y: 348 } as const;
+/** Портрет на правой нижней колонне: на какой высоте над её основанием середина рамы; E у колонны — гимн. */
+const PORTRAIT_SPOT = { pillar: 3, lift: 24, reach: 24 } as const;
 const BANNERS = [110, 262, 378, 530] as const;
 /** Сундук-хранилище у левой стены и манекены с доспехами вдоль стен. */
 const CHEST_SPOT = { x: 88, y: 146 } as const;
@@ -33,8 +36,11 @@ const MANNEQUINS = [[84, 238], [556, 238]] as const;
 const RIFT = { bolt: { every: [1.4, 3.2], reach: [70, 110], ms: 130 }, sparkEvery: 0.15 } as const;
 /** Где появляется герой (на сколько пикселей ниже трона, двери или костра). */
 const SPAWN_GAP = { throne: 46, door: 26, fire: 62 } as const;
-/** Вкладки разлома: режимы. */
-const RIFT_TABS = ['Арены', 'Рейтинг'] as const;
+/** Правила разлома — над списком арен; строки короткие — каждая в одну строчку окна. */
+const RIFT_RULES: readonly string[] = [
+  `Волны врагов без конца: каждый ${ARENA_FLOORS.bossEvery}-й этаж — Король Бездны.`,
+  'Рекорд — сколько этажей вы прошли за вылазку.',
+];
 /** Искры у трона после отдыха — когда экран уже светлеет (мс от начала отдыха). */
 const REST_FX_DELAY = 3900;
 /** Котик в зале: бегает к случайным точкам пола, иногда садится отдохнуть. Скорость — пиксели в секунду. */
@@ -242,6 +248,20 @@ export class BaseScene extends WorldScene {
   }
 
   // ---------------- зал: колонны, флаги, торговец, сундук, манекены ----------------
+  /** Портрет на правой нижней колонне: подойти и нажать E — играет гимн России (ещё раз — тишина). */
+  private buildPortrait(): void {
+    const [x, y] = PILLARS[PORTRAIT_SPOT.pillar];
+    makePortraitTexture(this);
+    const img = this.add.image(x, y - PORTRAIT_SPOT.lift, PORTRAIT.key).setDepth(y + 1);
+    img.setScale(1 / textureResolution(img.texture));
+    this.interactables.push({
+      x, y: y + 6, radius: PORTRAIT_SPOT.reach, promptY: 46,
+      label: () => (audio.anthemPlaying ? 'Портрет · остановить гимн' : 'Портрет · гимн России'),
+      use: () => { audio.toggleAnthem(); },
+    });
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => audio.stopAnthem());
+  }
+
   private buildHall(): void {
     for (const x of BANNERS) { const b = this.prop('castle_banner', x, WALL_BANNER.y); b.setScale(b.scaleX * WALL_BANNER.scale); }
     for (const [x, y] of PILLARS) {
@@ -259,6 +279,7 @@ export class BaseScene extends WorldScene {
       this.groundShadow(x, y, 0.6, 0.5);
       this.colliders.add(x, y - 2, 6);
     }
+    this.buildPortrait();
     this.prop('castle_merchant', MERCHANT.x, MERCHANT.y);
     this.groundShadow(MERCHANT.x, MERCHANT.y, 1.6);
     for (const dx of [-10, 2, 14]) this.colliders.add(MERCHANT.x + dx, MERCHANT.y - 2, 7);
@@ -286,7 +307,7 @@ export class BaseScene extends WorldScene {
         title: 'Сундук', width: 300,
         lines: ['Хранилище для любых вещей: сюда перекладывают их из карманов.', `Кошелёк: ${session.data.coins} монет`],
         options: [
-          { label: `Купить сундук · ${CHEST.perLevel} мест`, cost: CHEST.price, enabled: session.canAfford(CHEST.price), onChoose: () => { this.upgradeChest(); } },
+          { label: `Купить сундук · ${chestCapacity(1)} мест`, cost: CHEST.price, enabled: session.canAfford(CHEST.price), onChoose: () => { this.upgradeChest(); } },
           { label: 'Не сейчас', onChoose: () => undefined },
         ],
       });
@@ -299,7 +320,7 @@ export class BaseScene extends WorldScene {
         { label: 'Открыть сундук', onChoose: () => this.ui.openChest() },
         price === null
           ? { label: `Вместимость ${session.chestCapacity} (макс.)`, enabled: false, onChoose: () => undefined }
-          : { label: `Расширить до ${session.chestCapacity + CHEST.perLevel} мест`, cost: price, enabled: session.canAfford(price), onChoose: () => { this.upgradeChest(); } },
+          : { label: `Расширить до ${chestCapacity(lv + 1)} мест`, cost: price, enabled: session.canAfford(price), onChoose: () => { this.upgradeChest(); } },
         { label: 'Закрыть', onChoose: () => undefined },
       ],
     });
@@ -323,43 +344,27 @@ export class BaseScene extends WorldScene {
   }
 
   // ---------------- вылазка ----------------
-  /**
-   * Разлом — как лавка: вкладки «Сюжет» и «Рейтинг» сверху (при открытии — «Сюжет»), под ними — что выбрать;
-   * внизу красная кнопка «Остаться в замке».
-   */
-  private openExpeditionBoard(tab = 0): void {
-    const story = this.storyOptions(), rating = this.ratingOptions();
-    const kinds = session.ratingMobs.length;
+  /** Разлом: правила (RIFT_RULES), список арен с рекордами; внизу красная кнопка «Остаться в замке». */
+  private openExpeditionBoard(): void {
     this.ui.openChoice({
       title: 'Разлом Бездны', width: 360,
-      tabs: { labels: RIFT_TABS, active: tab, onSelect: (i) => this.openExpeditionBoard(i) },
-      lines: tab === 0
-        ? []
-        : [`Доступно врагов: ${kinds ? `${kinds} ${kinds === 1 ? 'вид' : kinds < 5 ? 'вида' : 'видов'}` : 'пока нет — пройдите арену'}`],
-      options: tab === 0 ? story : rating,
-      sizeLike: story.length >= rating.length ? story : rating,
+      lines: [...RIFT_RULES],
+      options: this.arenaOptions(),
       closeButton: 'Остаться в замке',
     });
   }
 
-  /** «Арены»: уровни по очереди — следующий открывается после победы над боссом предыдущего; рекорд — этажи подряд. */
-  private storyOptions(): ChoiceOption[] {
+  /** Арены: у открытых — рекорд этажей; ещё не сделанные — «в разработке», закрытые — «закрыто». */
+  private arenaOptions(): ChoiceOption[] {
     return LOCATIONS.map((loc) => {
-      // ещё не сделанные (и закрытые) арены — «скоро»; у открытых — рекорд этажей подряд: «7/10 подряд»
       const open = session.isUnlocked(loc.id) && !loc.soon;
       return {
-        label: `${loc.level}. ${loc.name} · ${open ? `${session.data.arenaBest[loc.id] ?? 0}/${ARENA_FLOORS} подряд` : 'скоро'}`,
-        desc: open ? `${loc.description} Награда: ${loc.reward} монет.` : loc.soon ? loc.description : 'Победите всех врагов и босса предыдущей арены.',
+        label: `${loc.level}. ${loc.name} · ${open ? `рекорд ${session.data.arenaBest[loc.id] ?? 0}` : loc.soon ? 'в разработке' : 'закрыто'}`,
+        desc: open ? `${loc.description} Награда за Короля: ${loc.reward} монет.` : loc.soon ? loc.description : 'Победите Короля Бездны на предыдущей арене.',
         enabled: open,
         onChoose: () => { this.startExpedition({ location: loc.id }); },
       };
     });
-  }
-
-  /** «Рейтинг»: бой на время в центре арены; открыт после первой пройденной арены. */
-  /** «Рейтинг» — будущий забег (тайный рынок, предметы на выбор): пока только описание, начать нельзя. */
-  private ratingOptions(): ChoiceOption[] {
-    return [{ label: 'Начать забег · скоро', enabled: false, desc: RATING_INFO, onChoose: () => undefined }];
   }
 
   /** Раненым в разлом — сначала вопрос: «Нет» отправляет отдохнуть у трона. */
@@ -383,10 +388,9 @@ export class BaseScene extends WorldScene {
 
   private showReport(r: Report): void {
     const lines: string[] = [];
-    if (r.floors) lines.push(`Пройдено этажей подряд: ${r.floors.count} из ${ARENA_FLOORS}.${r.floors.record ? ' Новый рекорд!' : ''}`);
+    if (r.floors) lines.push(r.floors.record ? `Пройдено этажей: ${r.floors.count}. Новый рекорд!` : `Пройдено этажей: ${r.floors.count}. Рекорд: ${r.floors.best}.`);
     lines.push(`Побеждено врагов: ${r.kills}.`);
     lines.push(r.coins > 0 ? `Заработано монет: ${r.coins}. Они уже в кошельке.` : 'Увы, но вы ничего не заработали.');
-    if (r.cleared) lines.push('Арена пройдена! Прогресс сохранён.');
     if (r.king) lines.push('Король Бездны повержен!');
     this.ui.openChoice({ title: r.died ? 'Вас принесли в замок' : 'Возвращение в зал', lines, options: [{ label: 'Хорошо', onChoose: () => undefined }], closable: true, width: 310 });
     session.lastReport = null;

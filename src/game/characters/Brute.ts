@@ -1,18 +1,19 @@
 import Phaser from 'phaser';
-import { textureResolution } from '../systems/CastleModels';
 import { ENEMY_TYPES, type EnemyConfig } from '../configs/characters';
 import { SETTINGS } from '../configs/settings';
-import { SLASH_ORIGIN } from '../systems/MobArt';
+import { inStrikeZone } from '../systems/Effects';
+import { fitSlash, SLASH_ORIGIN } from '../systems/MobArt';
 import type { Arena, Point } from '../types';
 import { Mob, type MobVariant } from './Mob';
 
 /**
- * Как бьёт громила: дальность, замах (успейте отойти), пауза после удара и между ударами.
+ * Как бьёт громила: дальность (урон везде от громилы до дуги следа — она растянута на reach), замах (успейте отойти),
+ * пауза после удара и между ударами.
  * slamRadius > 0 — удар дубиной по земле: круг-предупреждение и урон всем в круге.
  */
-interface BruteAttack { reach: number; windup: number; recover: number; cooldown: number; slamRadius: number }
-const ORC_ATTACK: BruteAttack = { reach: 18, windup: 0.35, recover: 0.3, cooldown: 1.1, slamRadius: 0 };
-const OGRE_ATTACK: BruteAttack = { reach: 26, windup: 0.75, recover: 0.6, cooldown: 2.2, slamRadius: 26 };
+interface BruteAttack { reach: number; arc: number; windup: number; recover: number; cooldown: number; slamRadius: number }
+const ORC_ATTACK: BruteAttack = { reach: 32, arc: 1, windup: 0.35, recover: 0.3, cooldown: 1.1, slamRadius: 0 };
+const OGRE_ATTACK: BruteAttack = { reach: 40, arc: 1, windup: 0.75, recover: 0.6, cooldown: 2.2, slamRadius: 26 };
 
 type State = 'chase' | 'windup' | 'recover';
 
@@ -22,6 +23,8 @@ abstract class Brute extends Mob {
   private timer = 0;
   private cooldown = 0.8;
   private readonly slamAt = new Phaser.Math.Vector2();
+  /** Куда направлен удар наискось (радианы) — задано в момент замаха. */
+  private aim = 0;
 
   protected constructor(scene: Phaser.Scene, x: number, y: number, config: EnemyConfig, private readonly attack: BruteAttack, arena: Arena, variant: MobVariant, shadow: number) {
     super(scene, x, y, config, arena, variant);
@@ -42,7 +45,7 @@ abstract class Brute extends Mob {
       this.timer -= dt;
       this.windupPose(this.timer, this.attack.windup);
       if (this.timer <= 0) {
-        this.strike(target, dx / dist, dy / dist);
+        this.strike(target);
         this.mode = 'recover'; this.timer = this.attack.recover; this.cooldown = this.attack.cooldown;
         this.recoverPose(0, this.timer);
       }
@@ -59,10 +62,13 @@ abstract class Brute extends Mob {
       // удар по земле перед собой: круг показывает, куда упадёт дубина
       this.slamAt.set(this.x + ux * this.attack.reach * 0.6, this.y + uy * this.attack.reach * 0.6);
       this.arena.fx.ring(this.slamAt.x, this.slamAt.y, this.attack.slamRadius, 0xff5a4a, this.attack.windup);
+    } else {
+      // удар наискось: направление — в момент замаха (зона урона — inStrikeZone, на экране не рисуется)
+      this.aim = Math.atan2(uy, ux);
     }
   }
 
-  private strike(target: Point, ux: number, uy: number): void {
+  private strike(target: Point): void {
     this.clearTint();
     if (this.attack.slamRadius > 0) {
       const { x, y } = this.slamAt;
@@ -74,12 +80,12 @@ abstract class Brute extends Mob {
       return;
     }
     this.arena.playSfx('swing');
-    const fx = this.scene.add.sprite(this.x + ux * 4, this.y - 10 + uy * 4, 'slash', '0')
-      .setOrigin(SLASH_ORIGIN.x, SLASH_ORIGIN.y).setRotation(Math.atan2(uy, ux)).setDepth(this.y + 30).setTint(0xffc8a0);
-    fx.setScale(0.85 / textureResolution(fx.texture));
-    fx.play('slash');
+    const a = this.aim, A = this.attack;
+    const fx = this.scene.add.sprite(this.x + Math.cos(a) * 4, this.y - 10 + Math.sin(a) * 4, 'fx_slash', '0')
+      .setOrigin(SLASH_ORIGIN.x, SLASH_ORIGIN.y).setRotation(a).setDepth(this.y + 30).setTint(0xffc8a0);
+    fitSlash(fx, A.reach, A.arc, 4).play('fx_slash');
     fx.once(Phaser.Animations.Events.ANIMATION_COMPLETE, () => fx.destroy());
-    if (Math.hypot(target.x - this.x, target.y - this.y) <= this.attack.reach + SETTINGS.player.radius) this.arena.hurtPlayer(this.config.damage, this.x, this.y);
+    if (inStrikeZone(target.x, target.y, this.x, this.y, a, A.reach, A.arc, SETTINGS.player.radius)) this.arena.hurtPlayer(this.config.damage, this.x, this.y);
   }
 }
 

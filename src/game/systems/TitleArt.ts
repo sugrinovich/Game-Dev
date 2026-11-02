@@ -10,7 +10,7 @@ import { ball, box, cyl, drawModel, drawModelJobs, hiresTexture, hiresTextureJob
 import { Effects, makeUtilityTextures } from './Effects';
 import { gripOffset, heroModel, heroOrigin, ORB, type Build, type HeroAnimKind, type Outfit, type Pose } from './HeroArt';
 import { CREST_RES, makeCrestTexture } from './IconArt';
-import { makeFireballSheet } from './MobArt';
+import { fireballJobs } from './MobArt';
 import { add, mul, norm, project, sub, type Axes, type Mark, type Paint, type Part, type Shade, type Surface, type Vec } from './Rig3D';
 import { addOutline, ramp, type Ramp } from './Volume';
 
@@ -585,7 +585,7 @@ export function siegeTextureJobs(scene: Phaser.Scene): (() => void)[] {
       () => addOutline(ctx(), w, h, w, h),
     ]),
     ...(has('title_knight') ? [] : modelSheetJobs(scene, 'title_knight', KNIGHT.w, KNIGHT.h, KNIGHT.frames, KNIGHT.rate, { x: KNIGHT.ax, y: KNIGHT.ay }, knightModel, { facing: KNIGHT.facing, scale: R * KNIGHT.scale })),
-    () => makeFireballSheet(scene), () => ensureArrowTexture(scene),
+    ...fireballJobs(scene), () => ensureArrowTexture(scene),
     ...SPLASH.flatMap(([kind, anim, facing]) => splashJobs(scene, kind, anim, facing)),
   ];
 }
@@ -608,11 +608,11 @@ export function makeTitleBasics(scene: Phaser.Scene): void {
 // ---------------- логотип ----------------
 /**
  * Логотип сверху вниз: герб, название, золотая черта с камнем, девиз. Зазоры между ними и от верха экрана одинаковые (gap)
- * и считаются по самим буквам (FONT_INK), а не по строке шрифта; название покачивается вниз на bob — черта ниже его самой
- * нижней точки. crestHalf — половина видимой высоты герба; outline — контур названия над буквами;
+ * и считаются по самим буквам (FONT_INK), а не по строке шрифта; название неподвижно (bob — запас под покачивание, 0)
+ * и того же стиля, что остальные надписи (без контура — outline 0). crestHalf — половина видимой высоты герба;
  * длинное название уменьшается до ширины экрана без margin по краям.
  */
-const LOGO = { gap: 4, crestHalf: 21, titleScale: 2, bob: 2, outline: 1, margin: 16 } as const;
+const LOGO = { gap: 4, crestHalf: 21, titleScale: 2, bob: 0, outline: 0, margin: 16 } as const;
 /** Черта под названием — 3D-модель: кадр (пиксели игры), половина высоты прутьев (ромб посередине выступает), наклон камеры (почти анфас). */
 const DIVIDER = { key: 'title_divider', w: 236, h: 14, half: 2.5, pitch: 0.3, bar: 104 } as const;
 
@@ -646,7 +646,8 @@ function makeDividerTexture(scene: Phaser.Scene): void {
 export function addTitleLogo(scene: Phaser.Scene): number {
   const d = TITLE_DEPTH.ui, ink = FONT_INK.title, gap = LOGO.gap;
   const crestY = gap + LOGO.crestHalf;
-  const title = new PText(scene, W / 2, 0, GAME.title, { font: 'title', ax: 0.5, ay: 0, color: COLORS.blade, shine: true });
+  // цвета стали и жара — в самих буквах (FORGED в PixelFont.ts): без тинта
+  const title = new PText(scene, W / 2, 0, GAME.title, { font: 'title', ax: 0.5, ay: 0, color: 0xffffff });
   const scale = Math.min(LOGO.titleScale, (W - LOGO.margin * 2) / title.textWidth);
   // верх контура букв — на gap ниже герба
   title.setScale(scale).setY(crestY + LOGO.crestHalf + gap + LOGO.outline - ink.top * scale);
@@ -656,13 +657,12 @@ export function addTitleLogo(scene: Phaser.Scene): number {
   const titleGlow = scene.add.image(W / 2, title.y + ink.center * scale, TEXTURES.glow).setTint(0xff9a3a).setBlendMode(Phaser.BlendModes.ADD).setScale(6.5, 1.1).setAlpha(0.22).setDepth(d - 1);
   scene.tweens.add({ targets: [crestGlow, titleGlow], alpha: '-=0.12', duration: 1800, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
   scene.add.image(W / 2, crestY, 'title_crest').setScale(1 / CREST_RES).setDepth(d);
-  const bobbing = scene.add.container(0, 0, [title]).setDepth(d);
-  scene.tweens.add({ targets: bobbing, y: LOGO.bob, duration: 2200, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+  title.setDepth(d);   // название не движется
   makeDividerTexture(scene);
   const lineY = titleBottom + gap + DIVIDER.half;
   scene.add.image(W / 2, lineY, DIVIDER.key).setScale(1 / GAME.resolution).setDepth(d);
   const subTop = lineY + DIVIDER.half + gap - FONT_INK.ui.top;
-  new PText(scene, W / 2, subTop, GAME.subtitle, { ax: 0.5, color: COLORS.text, shine: true }).setDepth(d);
+  new PText(scene, W / 2, subTop, GAME.subtitle, { ax: 0.5, color: COLORS.text }).setDepth(d);
   return subTop + FONT_INK.ui.bottom + gap;
 }
 
@@ -695,9 +695,10 @@ export class SiegeBackdrop {
     scene.add.image(CASTLE_AT.x - CASTLE_TEX.ax, CASTLE_AT.y - CASTLE_TEX.ay, 'siege_castle').setOrigin(0, 0).setScale(1 / R).setDepth(TITLE_DEPTH.bg + 2);
     this.addCastleLights();
     for (const k of SIEGE.kings) this.addKing(k.x, k.y);
-    for (const h of HORDE) this.addMarcher(h.kind, h.x, h.y);
+    HORDE.forEach((h) => this.addMarcher(h.kind, h.x, h.y));
     scene.add.image(SIEGE.knight.x, SIEGE.knight.y, TEXTURES.shadow).setScale(1.3, 0.8).setDepth(SIEGE.knight.y - 1);
-    scene.add.sprite(SIEGE.knight.x, SIEGE.knight.y, 'title_knight', '0').setOrigin(KNIGHT.ax / KNIGHT.w, KNIGHT.ay / KNIGHT.h).setScale(1 / R).setDepth(SIEGE.knight.y).play('title_knight');
+    const knight = scene.add.sprite(SIEGE.knight.x, SIEGE.knight.y, 'title_knight', '0').setOrigin(KNIGHT.ax / KNIGHT.w, KNIGHT.ay / KNIGHT.h).setScale(1 / R).setDepth(SIEGE.knight.y);
+    knight.play('title_knight');
 
     const onUpdate = (_t: number, delta: number): void => this.update(Math.min(delta, 50) / 1000);
     scene.events.on(Phaser.Scenes.Events.UPDATE, onUpdate);
@@ -728,16 +729,16 @@ export class SiegeBackdrop {
   private addKing(x: number, y: number): void {
     const glow = this.scene.add.image(x, y - 30, TEXTURES.glow).setTint(0x8a3aff).setBlendMode(Phaser.BlendModes.ADD).setScale(2.4, 3).setAlpha(0.3).setDepth(y - 2);
     const key = splashKey('king', 'idle'), o = heroOrigin(ENEMY_TYPES.king.body);
-    const king = this.scene.add.sprite(x, y, key, '0').setOrigin(o.x, o.y).setScale(1 / GAME.resolution).setDepth(y).play(key);
-    king.anims.setProgress(Math.random());
-    this.scene.tweens.add({ targets: [king, glow], y: '-=4', duration: 1600 + Math.random() * 600, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+    const king = this.scene.add.sprite(x, y, key, '0').setOrigin(o.x, o.y).setScale(1 / GAME.resolution).setDepth(y);
     this.kings.push(king);
+    king.play(key).anims.setProgress(Math.random());
+    this.scene.tweens.add({ targets: [king, glow], y: '-=4', duration: 1600 + Math.random() * 600, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
   }
 
   private addMarcher(kind: MarcherKind, x: number, y: number): void {
     const key = splashKey(kind, 'walk'), o = heroOrigin(ENEMY_TYPES[kind].body);
-    const sprite = this.scene.add.sprite(x, y, key, '0').setOrigin(o.x, o.y).setScale(1 / GAME.resolution).play(key);
-    sprite.setDepth(y).anims.setProgress(Math.random());
+    const sprite = this.scene.add.sprite(x, y, key, '0').setOrigin(o.x, o.y).setScale(1 / GAME.resolution).setDepth(y);
+    sprite.play(key).anims.setProgress(Math.random());
     const shadow = this.scene.add.image(x, y, TEXTURES.shadow).setScale(kind === 'ogre' ? 1.3 : 0.7, 0.7).setDepth(y - 1);
     const stopX = kind === 'archer' ? Phaser.Math.Between(SIEGE.archers.stopX[0], SIEGE.archers.stopX[1]) : null;
     const idle = kind === 'archer' ? splashKey(kind, 'idle') : null;

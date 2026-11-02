@@ -36,12 +36,12 @@ export const PLAYER_CHARACTERS = {
 
 /** Параметры мобов; поведение реализуется в наследниках Mob. Все враги — куклы из HeroArt: своё тело и обычные вещи. */
 export const ENEMY_TYPES = {
-  skeleton: { name: 'Скелет-мечник', body: 'skeleton', outfit: { weapon: 'sword', head: 'helm' }, displaySize: 32, speed: 34, radius: 5, separationRadius: 8, hp: 7, damage: 9 },
-  archer: { name: 'Скелет-лучник', body: 'skeleton', outfit: { weapon: 'bow', belt: 'quiver' }, displaySize: 32, speed: 30, radius: 5, separationRadius: 8, hp: 4, damage: 6 },
-  // орда Бездны: кадр орка 36, огра 48, Короля 64 (телосложение — в HeroArt.ts)
-  orc: { name: 'Орк-рубака', body: 'orc', outfit: { legs: 'loincloth', body: 'hide', weapon: 'axe' }, displaySize: 36, speed: 40, radius: 6, separationRadius: 9, hp: 6, damage: 8 },
-  ogre: { name: 'Огр-громила', body: 'ogre', outfit: { legs: 'loincloth', weapon: 'club' }, displaySize: 48, speed: 22, radius: 10, separationRadius: 13, hp: 18, damage: 13 },
-  king: { name: 'Король Бездны', body: 'abyssKing', outfit: { weapon: 'orb' }, displaySize: 64, speed: 26, radius: 14, separationRadius: 18, hp: 70, damage: 12, flying: true },
+  skeleton: { name: 'Скелет-мечник', body: 'skeleton', outfit: { weapon: 'sword', head: 'helm' }, displaySize: 40, speed: 34, radius: 5, separationRadius: 8, hp: 12, damage: 9 },
+  archer: { name: 'Скелет-лучник', body: 'skeleton', outfit: { weapon: 'bow', belt: 'quiver' }, displaySize: 40, speed: 30, radius: 5, separationRadius: 8, hp: 7, damage: 6 },
+  // орда Бездны: кадр скелета 40 (как у героя), орка 36, огра 48, Короля 64 (телосложение — в HeroArt.ts)
+  orc: { name: 'Орк-рубака', body: 'orc', outfit: { legs: 'loincloth', body: 'hide', weapon: 'axe' }, displaySize: 36, speed: 40, radius: 6, separationRadius: 9, hp: 11, damage: 8 },
+  ogre: { name: 'Огр-громила', body: 'ogre', outfit: { legs: 'loincloth', weapon: 'club' }, displaySize: 48, speed: 22, radius: 10, separationRadius: 13, hp: 30, damage: 13 },
+  king: { name: 'Король Бездны', body: 'abyssKing', outfit: { weapon: 'orb' }, displaySize: 64, speed: 26, radius: 14, separationRadius: 18, hp: 100, damage: 12, flying: true },
 } satisfies Record<string, EnemyConfig>;
 
 export type PlayerCharacterId = keyof typeof PLAYER_CHARACTERS;

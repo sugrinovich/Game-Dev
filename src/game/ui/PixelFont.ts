@@ -218,6 +218,14 @@ function bitmap(rows: Glyph, scale: number, pen: boolean): boolean[][] {
 
 /** Сталь клинка сверху вниз: верх в отблеске света, дальше ровный светлый металл — без тёмных полос. */
 const BLADE = ['#ffffff', '#ffffff', '#f3f6f9', '#eef2f6', '#eef2f6', '#eaeff4', '#eaeff4'] as const;
+/** Название игры — цвета меча с экрана загрузки: блик сверху, сталь клинка, книзу темнее, как дол. */
+const SWORD_STEEL = ['#e8eef4', '#c8d0dc', '#a8b0bc', '#a8b0bc', '#8e98a8', '#6a7282', '#525a6a'] as const;
+/**
+ * Шрифты с раскалённым контуром — сталь только что из горна: жар сверху добела, книзу багровый (цвета раскалённой
+ * кромки меча-полосы загрузки), между жаром и сталью — тонкая тёмная окалина.
+ */
+const FORGED: ReadonlySet<string> = new Set(['title']);
+const FORGE_HEAT = ['#fff6c0', '#ffd060', '#ff8a2a', '#c83a1a'] as const;
 
 /**
  * Размеры шрифтов: scale — увеличение рисунка, spacing — промежуток между буквами, space — ширина пробела,
@@ -229,7 +237,8 @@ export const FONTS = {
   // в окнах, на кнопках и лентах — чистые ровные буквы без тёмного контура (контур давал «полоски» между буквами)
   ui: { scale: 1, pen: false, bevel: false, outline: false, spacing: 1, space: 3, lineHeight: 12, ramp: BLADE, extrude: [], detail: 1 },
   big: { scale: 2, pen: false, bevel: false, outline: false, spacing: 2, space: 6, lineHeight: 22, ramp: BLADE, extrude: [], detail: 1 },
-  title: { scale: 2, pen: false, bevel: true, outline: true, spacing: 2, space: 6, lineHeight: 22, ramp: BLADE, extrude: ['#686868', '#444444'], detail: 2 },
+  // название на заставке — цвета меча с раскалённым контуром (FORGED); атлас вдвое детальнее (показано вдвое крупнее)
+  title: { scale: 2, pen: false, bevel: true, outline: false, spacing: 2, space: 6, lineHeight: 22, ramp: SWORD_STEEL, extrude: [], detail: 2 },
   // надписи прямо на игровом поле (подписи на полу, всплывающие числа, «!») — с контуром, иначе теряются на камне
   world: { scale: 1, pen: false, bevel: false, outline: true, spacing: 1, space: 3, lineHeight: 12, ramp: BLADE, extrude: [], detail: 1 },
   worldBig: { scale: 2, pen: false, bevel: false, outline: true, spacing: 2, space: 6, lineHeight: 22, ramp: BLADE, extrude: [], detail: 1 },
@@ -279,7 +288,7 @@ export const FONT_INK: Record<FontKey, { top: number; bottom: number; center: nu
   // буквы без контура (измерено на экране; bottom — первая строка под буквами): ui — 7 строк, big — 16
   ui: { top: 2, bottom: 9, center: 5.5 },
   big: { top: 4, bottom: 20, center: 12 },
-  title: { top: 5, bottom: 21, center: 13 },
+  title: { top: 4, bottom: 20, center: 12 },
   world: { top: 2, bottom: 11, center: 6.5 },
   worldBig: { top: 5, bottom: 20, center: 12.5 },
 };
@@ -409,6 +418,13 @@ function makeFontHD(scene: Phaser.Scene, key: FontKey): void {
       for (let d = depth; d >= 1; d--) c.stroke(lift(d * S));
       c.stroke(shape);
     }
+    if (FORGED.has(key)) {
+      // жар — на пиксель буквы наружу (столько места под контур в полях PAD), окалина — по самому краю стали
+      const heat = c.createLinearGradient(0, top - S, 0, bottom + S);
+      FORGE_HEAT.forEach((color, i) => heat.addColorStop(i / (FORGE_HEAT.length - 1), color));
+      c.strokeStyle = heat; c.lineWidth = 2 * S; c.stroke(shape);
+      c.strokeStyle = INK; c.lineWidth = 0.7 * S; c.stroke(shape);
+    }
     const metal = c.createLinearGradient(0, top, 0, bottom);
     f.ramp.forEach((color, i) => metal.addColorStop(i / (f.ramp.length - 1), color));
     c.fillStyle = metal; c.fill(shape);
@@ -435,8 +451,12 @@ function makeFontHD(scene: Phaser.Scene, key: FontKey): void {
 }
 
 /** Создаёт шрифты игры (HD или пиксельные — HD_FONT). Вызывается один раз при запуске (BootScene). */
-export function makePixelFonts(scene: Phaser.Scene): void {
-  for (const key of ['ui', 'big', 'title', 'world', 'worldBig'] as const) {
+/** Шрифты экрана загрузки — рисуются сразу (BootScene); остальные (WORLD_FONTS) — заданиями загрузки. */
+export const LOADING_FONTS: readonly FontKey[] = ['ui', 'big', 'title'];
+export const WORLD_FONTS: readonly FontKey[] = ['world', 'worldBig'];
+
+export function makePixelFonts(scene: Phaser.Scene, keys: readonly FontKey[] = [...LOADING_FONTS, ...WORLD_FONTS]): void {
+  for (const key of keys) {
     if (HD_FONT) makeFontHD(scene, key); else makeFont(scene, key);
   }
 }

@@ -1,8 +1,7 @@
 import Phaser from 'phaser';
 import { CANVAS_SCALE, COLORS, DEPTH, GAME, GLINT_EVERY, KEYS, SCENES } from '../configs/game';
 import { TEXTURES } from '../configs/assets';
-import { EQUIPMENT, EQUIPMENT_IDS, RARITIES, SHOP_DEPARTMENTS, SHOP_ITEMS, type ShopItemId } from '../configs/items';
-import { SETTINGS } from '../configs/settings';
+import { EQUIPMENT, EQUIPMENT_IDS, RARITIES, SHOP_DEPARTMENTS, SHOP_ITEMS, type Rarity, type ShopItemId } from '../configs/items';
 import { audio } from '../systems/Sfx';
 import { session } from '../state/Session';
 import { PText, startGlints } from '../ui/PText';
@@ -22,6 +21,8 @@ export interface ChoiceOption {
   /** Цена в монетах. */
   cost?: number;
   enabled?: boolean;
+  /** Нажали на недоступный пункт (enabled: false): например, сообщение, почему товар закрыт. */
+  onDenied?: () => void;
   /** Вернуть true, чтобы окно осталось открытым (например, переключатель звука). */
   onChoose: () => boolean | void;
 }
@@ -37,6 +38,8 @@ export interface ChoiceSpec {
   tabs?: { labels: readonly string[]; active: number; onSelect: (i: number) => void };
   /** Окно размером как для этого списка (самая полная вкладка): при переключении вкладок оно не прыгает. */
   sizeLike?: readonly ChoiceOption[];
+  /** Окно постоянной высоты (доля высоты экрана): не прыгает, длинный список листается внутри (лавка). */
+  height?: number;
   /** Кнопка внизу окна (например, «Закрыть» в лавке) — отдельно от списка, чтобы не выглядела товаром. */
   closeButton?: string;
   /** Что делает кнопка внизу вместо закрытия окна (например, «Назад» — вернуться к прежнему меню). */
@@ -48,10 +51,22 @@ export interface MinimapSpec { key: string; w: number; h: number; worldW: number
 
 const W = GAME.width;
 const H = GAME.height;
+/** Товары лавки по классу — от обычного к легендарному (порядок классов — RARITIES); внутри класса — как в EQUIPMENT_IDS. */
+const RARITY_ORDER = Object.keys(RARITIES) as Rarity[];
+const SHOP_ORDER = [...EQUIPMENT_IDS].sort((a, b) => RARITY_ORDER.indexOf(EQUIPMENT[a].rarity) - RARITY_ORDER.indexOf(EQUIPMENT[b].rarity));
+/** Класс, который нужно докупить, — в сообщении о закрытом товаре («купите все обычные вещи отдела …»). */
+const LOCK_CLASS: Record<Rarity, string> = { common: 'обычные', rare: 'редкие', enchanted: 'зачарованные', epic: 'эпические', legendary: 'легендарные' };
 /** Длительность плавного появления окна. */
 const MODAL_FADE_MS = 160;
 /** Высота строки в окне выбора; длинные списки (лавка) — плотнее, чтобы окно влезло в экран. */
 const MODAL_ROW = { normal: 19, compact: 15, compactAfter: 8 } as const;
+/**
+ * Длинный список (лавка, вкладка «Все») не влезает в экран: видно rows строк (плотных), остальное листается —
+ * колесом мыши и клавишами за выделением; у краёв списка — золотые стрелки «есть ещё» (arrow — их полуширина).
+ */
+const MODAL_SCROLL = { rows: 7, arrow: 3 } as const;
+/** Окно лавки — постоянной высоты (доля экрана): при переключении вкладок не прыгает, товары листаются внутри. */
+const SHOP_HEIGHT = 0.9;
 /** Высота ленты крупного объявления: поле в 20 строк — у 16 строк букв по 2 сверху и снизу. */
 const BANNER_H = 23;
 /** Заголовок меню (паузы): только его закрывает клавиша меню. */
@@ -68,7 +83,6 @@ const REST_SCREEN = { dark: 0.94, fadeMs: 900, holdMs: 3000 } as const;
 /** Подложка под иконкой товара (цвет класса) — квадрат такой стороны. */
 const ICON_TILE = 15;
 /** Первая вкладка лавки — все товары. */
-const SHOP_ALL = 'Все';
 /** Кнопка внизу окна выбора: наименьшая ширина (длинная надпись — шире, с полями padX слева и справа), высота, отступ над ней. */
 const MODAL_CLOSE = { w: 84, padX: 12, h: 16, gap: 8 } as const;
 /** Вкладки над списком: высота, зазор между вкладками, отступ под ними. */
@@ -133,7 +147,7 @@ export class UIScene extends Phaser.Scene {
    * Открытое окно выбора: sel — выделенный пункт (−1 — ничего; номер сразу за пунктами — кнопка внизу),
    * hits — где на экране пункты и кнопка; buttonHover — кнопка внизу выделена наведением мыши (а не клавишами).
    */
-  private modal: { spec: ChoiceSpec; sel: number; box: Phaser.GameObjects.Container; hits: { i: number; x: number; y: number; w: number; h: number }[]; buttonHover?: boolean } | null = null;
+  private modal: { spec: ChoiceSpec; sel: number; scroll: number; visible?: number; box: Phaser.GameObjects.Container; hits: { i: number; x: number; y: number; w: number; h: number }[]; buttonHover?: boolean } | null = null;
   /** Окно инвентаря-рюкзака или сундука-хранилища (свои, не список). */
   private inventory: InventoryWindow | ChestWindow | null = null;
   /** Обучающая карточка (показывается один раз на каждую подсказку). */
@@ -220,6 +234,7 @@ export class UIScene extends Phaser.Scene {
     const kb = this.input.keyboard;
     kb?.on('keydown', (ev: KeyboardEvent) => this.onKey(ev));
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => this.hoverModal(p));
+    this.input.on('wheel', (_p: Phaser.Input.Pointer, _o: unknown, _dx: number, dy: number) => this.scrollModal(Math.sign(dy)));
     this.input.once('pointerdown', () => audio.init());
     kb?.once('keydown', () => audio.init());
     const onBlur = (): void => {
@@ -278,7 +293,7 @@ export class UIScene extends Phaser.Scene {
     for (const t of this.hudPulses) { if (want) t.pause(); else t.resume(); }
   }
 
-  /** Мир сообщает, какая сцена сейчас под интерфейсом. */
+  /** Мир сообщает, какая сцена сейчас под интерфейсом. Инвентарь открывается и в замке, и на арене. */
   bind(world: WorldScene, mode: 'base' | 'expedition'): void {
     this.world = world;
     this.mode = mode;
@@ -359,7 +374,7 @@ export class UIScene extends Phaser.Scene {
     this.potionText.setText(`×${session.data.poultice}`).setColor(session.data.poultice > 0 ? COLORS.text : COLORS.dim);
     this.coinText.setText(`${session.data.coins}`);
     // рывок
-    const cd = w.player.dashCd / SETTINGS.combat.dashCooldown;
+    const cd = w.player.dashCd / session.dashCooldown;
     this.dashG.clear();
     const dashX = PLATE.margin + PLATE.pad + HUD.icon + HUD.gap + BAR_TIP;
     drawBar(this.dashG, dashX, H - PLATE.margin - PLATE.h / 2 - 2, DASH_BAR_W, 4, 1 - cd, cd > 0 ? { ...BAR_COLORS.dash, light: BAR_COLORS.dash.fill } : BAR_COLORS.dash);
@@ -451,10 +466,12 @@ export class UIScene extends Phaser.Scene {
 
   openChoice(spec: ChoiceSpec): void {
     this.inventory?.close();
-    const wasOpen = this.modal !== null;
+    const prev = this.modal, wasOpen = prev !== null;
+    // то же окно на той же вкладке (например, после покупки) — список остаётся прокручен, где был
+    const scroll = prev && prev.spec.title === spec.title && prev.spec.tabs?.active === spec.tabs?.active ? prev.scroll : 0;
     this.closeModal(false);
     // сначала ничего не выделено: пункт выделяется наведением мыши (или клавишами W / S)
-    this.modal = { spec, sel: -1, box: this.add.container(0, 0).setDepth(DEPTH.overlay), hits: [] };
+    this.modal = { spec, sel: -1, scroll, box: this.add.container(0, 0).setDepth(DEPTH.overlay), hits: [] };
     audio.play('select');
     this.renderModal();
     // плавно показываем только новое окно; переход между окнами (например, после покупки) — без мигания
@@ -477,9 +494,26 @@ export class UIScene extends Phaser.Scene {
     if (m.sel === button && m.buttonHover) { m.buttonHover = false; this.select(-1); }
   }
 
+  /** Колесо мыши над длинным списком: листает на строку. */
+  private scrollModal(step: number): void {
+    const m = this.modal;
+    const rows = m?.visible ?? MODAL_SCROLL.rows;
+    if (!m || step === 0 || m.spec.options.length <= rows) return;
+    const next = Phaser.Math.Clamp(m.scroll + step, 0, m.spec.options.length - rows);
+    if (next === m.scroll) return;
+    m.scroll = next;
+    // выделенный пункт ушёл из виду — выделение снимается (иначе внизу описание невидимого товара)
+    if (m.sel >= 0 && m.sel < m.spec.options.length && (m.sel < next || m.sel >= next + rows)) m.sel = -1;
+    this.renderModal();
+  }
+
   private select(i: number): void {
-    if (!this.modal || this.modal.sel === i) return;
-    this.modal.sel = i;
+    const m = this.modal;
+    if (!m || m.sel === i) return;
+    m.sel = i;
+    // выбранный клавишами W / S пункт — всегда на виду (мышью выбирают только видимые; колесо листает свободно)
+    const rows = m.visible ?? MODAL_SCROLL.rows;
+    if (i >= 0 && i < m.spec.options.length) m.scroll = Phaser.Math.Clamp(m.scroll, i - rows + 1, i);
     if (i >= 0) audio.play('select');
     this.renderModal();
   }
@@ -494,7 +528,7 @@ export class UIScene extends Phaser.Scene {
     }
     const o = m.spec.options[i];
     if (!o) return;
-    if (o.enabled === false) { audio.play('error'); return; }
+    if (o.enabled === false) { audio.play('error'); o.onDenied?.(); return; }
     audio.play('click');
     const keep = o.onChoose();
     if (this.modal !== m) return;
@@ -522,8 +556,7 @@ export class UIScene extends Phaser.Scene {
     box.removeAll(true);
     m.hits = [];
     const pw = spec.width ?? 270;
-    const sized = spec.sizeLike ?? spec.options, rows = Math.max(spec.options.length, sized.length);
-    const rowH = rows > MODAL_ROW.compactAfter ? MODAL_ROW.compact : MODAL_ROW.normal;
+    const sized = spec.sizeLike ?? spec.options, total = Math.max(spec.options.length, sized.length);
     const bodyLines = spec.lines ?? [];
     const bodyText = bodyLines.length ? new PText(this, 0, 0, bodyLines.join('\n'), { color: COLORS.text, maxWidth: pw - 28 }) : null;
     const bodyH = bodyText ? bodyText.textHeight + 6 : 0;
@@ -539,7 +572,17 @@ export class UIScene extends Phaser.Scene {
     }));
     const tabsH = spec.tabs ? MODAL_TABS.h + MODAL_TABS.below : 0;
     const closeH = spec.closeButton ? MODAL_CLOSE.gap + MODAL_CLOSE.h : 0;
-    const ph = MODAL_SPACE.top + tabsH + bodyH + rows * rowH + descH + closeH + MODAL_SPACE.bottom;
+    const frame = MODAL_SPACE.top + tabsH + bodyH + descH + closeH + MODAL_SPACE.bottom;
+    // окно постоянной высоты: под список — всё, что осталось, строки обычные (между иконками зазор); иначе — по списку
+    const fixedH = spec.height ? Math.round(H * spec.height) : 0;
+    const fit = fixedH ? Math.max(1, Math.floor((fixedH - frame) / MODAL_ROW.normal)) : MODAL_SCROLL.rows;
+    const rows = Math.min(total, fit), scrolling = total > fit;
+    const rowH = fixedH ? MODAL_ROW.normal : scrolling || total > MODAL_ROW.compactAfter ? MODAL_ROW.compact : MODAL_ROW.normal;
+    const listH = fixedH ? fixedH - frame : rows * rowH;
+    m.visible = rows;
+    const maxScroll = Math.max(0, spec.options.length - rows);
+    m.scroll = Phaser.Math.Clamp(m.scroll, 0, maxScroll);
+    const ph = frame + listH;
     const px = Math.round((W - pw) / 2);
     const py = Math.round((H - ph) / 2);
     const dim = this.add.rectangle(0, 0, W, H, 0x0b0919, 0.62).setOrigin(0, 0).setInteractive();
@@ -553,7 +596,8 @@ export class UIScene extends Phaser.Scene {
     if (spec.tabs) { this.renderTabs(box, spec.tabs, px + 14, y, pw - 28); y += tabsH; }
     if (bodyText) { bodyText.setPosition(px + 14, y); box.add(bodyText); y += bodyH; }
     spec.options.forEach((o, i) => {
-      const ry = y + i * rowH;
+      if (i < m.scroll || i >= m.scroll + rows) return;
+      const ry = y + (i - m.scroll) * rowH;
       const on = o.enabled !== false;
       const cy = ry + (rowH - 2) / 2;   // середина строки: по ней — значки, надпись и цена
       if (i === m.sel) {
@@ -577,10 +621,19 @@ export class UIScene extends Phaser.Scene {
       zone.on('pointerdown', () => this.choose(i));
       box.add(zone);
     });
-    y += rows * rowH + 4;
+    if (m.scroll > 0 || m.scroll < maxScroll) this.drawScrollArrows(box, px + pw - 16, y, rows * rowH, m.scroll > 0, m.scroll < maxScroll);
+    y += listH + 4;
     if (descText) { descText.setPosition(px + 14, y); box.add(descText); }
     if (spec.closeButton) this.renderCloseButton(box, spec.closeButton, py + ph - MODAL_SPACE.bottom - MODAL_CLOSE.h, m.sel === spec.options.length, spec.options.length);
     dim.on('pointerdown', () => { /* клик мимо окна ничего не делает */ });
+  }
+
+  /** Золотые стрелки у правого края списка: вверху — «есть выше», внизу — «есть ниже». */
+  private drawScrollArrows(box: Phaser.GameObjects.Container, x: number, y: number, h: number, up: boolean, down: boolean): void {
+    const a = MODAL_SCROLL.arrow, g = this.add.graphics().fillStyle(UI.gold, 1);
+    if (up) g.fillTriangle(x - a, y + a * 1.6, x + a, y + a * 1.6, x, y);
+    if (down) g.fillTriangle(x - a, y + h - a * 1.6 - 2, x + a, y + h - a * 1.6 - 2, x, y + h - 2);
+    box.add(g);
   }
 
   /** Красная кнопка внизу по центру окна: выбрана (под курсором или с клавиатуры) — светлее и чуть выше. */
@@ -618,30 +671,41 @@ export class UIScene extends Phaser.Scene {
 
   // ---------------- меню паузы ----------------
   /**
-   * Лавка: вкладки сверху — «Все» и отделы (оружие, броня, магия, бафы), под ними товары выбранной вкладки.
-   * Покупка уходит в карманы; если они полны — уведомление.
+   * Лавка: вкладки сверху — отделы (оружие, броня, магия, бафы; при открытии — оружие), под ними товары отдела
+   * (SHOP_ORDER: сначала обычные, потом редкие и выше). Вещи класса закрыты, пока в отделе не куплены все вещи
+   * предыдущего класса (Session.lockedBy); нажали на закрытую — сообщение, что купить сначала. Покупка уходит в карманы;
+   * если они полны — уведомление.
    */
   openShop(tab = 0): void {
-    const dep = SHOP_DEPARTMENTS[tab - 1];
-    const item = (id: ShopItemId): ChoiceOption => ({
-      label: `${SHOP_ITEMS[id].name} · ${session.data.inventory[id] ? 'куплено' : `${SHOP_ITEMS[id].price} мон.`}`,
-      icon: SHOP_ITEMS[id].icon, iconTile: RARITIES[EQUIPMENT[id].rarity],
-      desc: `Класс: ${RARITIES[EQUIPMENT[id].rarity].name.toLowerCase()}\n${SHOP_ITEMS[id].description}`,
-      enabled: session.canBuy(id),
-      onChoose: () => {
-        if (session.pocketsFree <= 0) { audio.play('error'); this.message('В карманах нет места', SHOP_ITEMS[id].icon); }
-        else if (session.buy(id)) { audio.play('pickup'); this.message('Предмет в карманах', SHOP_ITEMS[id].icon); }
-        this.openShop(tab);
-        return true;
-      },
-    });
-    const all = EQUIPMENT_IDS.map(item), shown = EQUIPMENT_IDS.filter((id) => !dep || dep.kinds.includes(EQUIPMENT[id].kind)).map(item);
+    const dep = SHOP_DEPARTMENTS[tab] ?? SHOP_DEPARTMENTS[0]!;
+    const item = (id: ShopItemId): ChoiceOption => {
+      const lock = session.lockedBy(id), rarity = RARITIES[EQUIPMENT[id].rarity].name.toLowerCase();
+      const state = session.data.inventory[id] ? 'куплено' : lock ? 'закрыто' : `${SHOP_ITEMS[id].price} мон.`;
+      const closed = lock && `Закрыто: сначала купите все ${LOCK_CLASS[lock]} вещи отдела «${dep.name}»`;
+      return {
+        label: `${SHOP_ITEMS[id].name} · ${state}`,
+        icon: SHOP_ITEMS[id].icon, iconTile: RARITIES[EQUIPMENT[id].rarity],
+        desc: `Класс: ${rarity}\n${SHOP_ITEMS[id].description}`,
+        enabled: session.canBuy(id),
+        onDenied: () => { if (closed) this.message(closed, SHOP_ITEMS[id].icon); },
+        onChoose: () => {
+          if (closed) { audio.play('error'); this.message(closed, SHOP_ITEMS[id].icon); }
+          else if (session.pocketsFree <= 0) { audio.play('error'); this.message('В карманах нет места', SHOP_ITEMS[id].icon); }
+          else if (session.buy(id)) { audio.play('pickup'); this.message('Предмет в карманах', SHOP_ITEMS[id].icon); }
+          this.openShop(tab);
+          return true;
+        },
+      };
+    };
+    const inDep = SHOP_ORDER.filter((id) => dep.kinds.includes(EQUIPMENT[id].kind));
+    // окно постоянной высоты — описание под список меряется по самому длинному из всех товаров
     this.openChoice({
       title: 'Лавка снабженца', width: 350,
-      tabs: { labels: [SHOP_ALL, ...SHOP_DEPARTMENTS.map((d) => d.name)], active: tab, onSelect: (i) => this.openShop(i) },
-      lines: [shown.length ? `Кошелёк: ${session.data.coins} монет` : 'Товара пока нет — загляните позже.'],
-      options: shown,
-      sizeLike: all,
+      tabs: { labels: SHOP_DEPARTMENTS.map((d) => d.name), active: tab, onSelect: (i) => this.openShop(i) },
+      lines: [`Кошелёк: ${session.data.coins} монет`],
+      options: inDep.map(item),
+      sizeLike: SHOP_ORDER.map(item),
+      height: SHOP_HEIGHT,
       closeButton: 'Закрыть',
     });
   }
@@ -682,16 +746,14 @@ export class UIScene extends Phaser.Scene {
   }
 
   openPause(): void {
-    const w = this.world as (WorldScene & { abandonRun?: () => void; goMenu?: () => void }) | null;
+    const w = this.world as (WorldScene & { goMenu?: () => void }) | null;
     if (!w) return;
     const options: ChoiceOption[] = [
       { label: 'Продолжить', onChoose: () => undefined },
       { label: 'Обучение', onChoose: () => { this.openTutorials(); return true; } },
       { label: audio.muted ? 'Звук: выключен' : 'Звук: включён', onChoose: () => { audio.toggleMute(); this.openPause(); return true; } },
     ];
-    if (this.mode === 'expedition' && w.abandonRun) {
-      options.push({ label: 'Вернуться в замок', onChoose: () => { this.confirm('Покинуть арену?', ['Заработанные монеты сохранятся.'], this.leavePause(() => w.abandonRun?.())); return true; } });
-    }
+    // с арены в замок — только через разлом внизу арены (удерживая E), не из меню
     options.push({ label: 'Выйти на главную', onChoose: () => { this.confirm('Выйти на главную?', ['Прогресс замка и монеты сохранены.'], this.leavePause(() => w.goMenu?.())); return true; } });
     this.openChoice({ title: PAUSE_TITLE, options, width: 250 });
     this.pauseMenu = true;

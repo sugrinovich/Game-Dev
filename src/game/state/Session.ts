@@ -1,7 +1,6 @@
 import { GAME } from '../configs/game';
 import { SETTINGS } from '../configs/settings';
-import { ARENA_FLOORS, BAG_START, CHEST, ECONOMY, EQUIPMENT, EQUIPMENT_IDS, LOCATIONS, POCKETS, ROOM_IDS, ROOMS, SHOP_ITEMS, type BagSize, type EquipmentId, type ItemStat, type LocationId, type RoomId, type ShopItemId } from '../configs/items';
-import type { EnemyTypeId } from '../configs/characters';
+import { BAG_START, CHEST, chestCapacity, departmentOf, ECONOMY, EQUIPMENT, EQUIPMENT_IDS, LOCATIONS, RARITIES, POCKETS, ROOM_IDS, ROOMS, SHOP_ITEMS, type BagSize, type EquipmentId, type ItemStat, type LocationId, type Rarity, type RoomId, type ShopItemId } from '../configs/items';
 
 /** Место предмета в рюкзаке: левая верхняя клетка и поворот (четверти оборота по часовой стрелке). */
 export interface BagSpot { x: number; y: number; rot: number }
@@ -63,8 +62,8 @@ function fresh(): SaveData {
 }
 
 /** Итоги вылазки для окна отчёта в лагере. */
-/** Итоги вылазки; floors — сколько этажей пройдено подряд и побит ли рекорд арены. */
-export interface Report { died: boolean; kills: number; king: boolean; coins: number; cleared: boolean; floors?: { count: number; record: boolean } }
+/** Итоги вылазки; floors — сколько этажей пройдено, побит ли рекорд арены и сам рекорд. */
+export interface Report { died: boolean; kills: number; king: boolean; coins: number; cleared: boolean; floors?: { count: number; record: boolean; best: number } }
 
 /** Всё, что игра помнит: сохранение + текущая вылазка. Один общий объект на игру. */
 class Session {
@@ -80,6 +79,7 @@ class Session {
 
   newGame(): void {
     this.data = fresh();
+    this.topUpTestCoins();
     this.hp = this.maxHp;
     this.clearRun();
     this.lastReport = null;
@@ -104,9 +104,10 @@ class Session {
         cleared: Array.isArray(parsed.cleared) ? parsed.cleared.filter((id) => LOCATIONS.some((l) => l.id === id)) : [],
         tips: Array.isArray(parsed.tips) ? parsed.tips.filter((t) => typeof t === 'string') : [],
         mainWeapon: EQUIPMENT_IDS.find((id) => id === parsed.mainWeapon) ?? null,
-        arenaBest: Object.fromEntries(LOCATIONS.filter((l) => Number(parsed.arenaBest?.[l.id]) > 0).map((l) => [l.id, Math.min(ARENA_FLOORS, Math.floor(Number(parsed.arenaBest![l.id])))])),
+        arenaBest: Object.fromEntries(LOCATIONS.filter((l) => Number(parsed.arenaBest?.[l.id]) > 0).map((l) => [l.id, Math.floor(Number(parsed.arenaBest![l.id]))])),
       };
       this.data.coins = Number.isFinite(this.data.coins) ? Math.max(0, Math.floor(this.data.coins)) : base.coins;
+      this.topUpTestCoins();
       this.data.poultice = Math.max(0, Math.min(SETTINGS.base.poulticeMax, Math.floor(Number(this.data.poultice) || 0)));
       // в сундуке — только купленное и не надетое
       this.data.chest = this.data.chest.filter((id) => this.data.inventory[id]).slice(0, this.chestCapacity);
@@ -119,6 +120,9 @@ class Session {
       return true;
     } catch { return false; }
   }
+
+  /** Тест: кошелёк не меньше ECONOMY.testCoins (0 — выключено). */
+  private topUpTestCoins(): void { this.data.coins = Math.max(this.data.coins, ECONOMY.testCoins); }
 
   /** Обучающая подсказка: true — показать сейчас (и запомнить, что показана), false — уже видели. */
   firstTime(tip: string): boolean {
@@ -158,7 +162,12 @@ class Session {
   get packItem(): EquipmentId | undefined { return EQUIPMENT_IDS.find((id) => EQUIPMENT[id].bagSize && this.data.equipped[id]); }
   get maxHp(): number { return SETTINGS.base.baseHp + this.bonus('maxHp'); }
   get damage(): number { return SETTINGS.combat.baseDamage + this.bonus('damage'); }
-  get attackCooldown(): number { return SETTINGS.combat.attackCooldown; }
+  /** Во сколько раз быстрее бег (ожерелье скорости и т. п.). */
+  get moveMul(): number { return 1 + this.bonus('speed') / 100; }
+  /** Монеты за врагов (талисман удачи — больше). */
+  get coinMul(): number { return 1 + this.bonus('coins') / 100; }
+  /** Перезарядка рывка (сапоги ветра — короче). */
+  get dashCooldown(): number { return SETTINGS.combat.dashCooldown * (1 - this.bonus('dash') / 100); }
 
   clearRun(): void { this.runKills = 0; this.runCoins = 0; }
 
@@ -170,7 +179,21 @@ class Session {
 
   /** Хватает ли монет и не куплено ли уже (место в карманах проверяет buy: если его нет — покупка не проходит). */
   canBuy(id: ShopItemId): boolean {
-    return this.data.coins >= SHOP_ITEMS[id].price && !this.data.inventory[id];
+    return this.data.coins >= SHOP_ITEMS[id].price && !this.data.inventory[id] && this.lockedBy(id) === null;
+  }
+
+  /**
+   * Почему вещь закрыта в лавке: класс, все вещи которого в её отделе надо сначала купить (ближайший класс ниже, где
+   * в отделе есть вещи); null — вещь открыта.
+   */
+  lockedBy(id: EquipmentId): Rarity | null {
+    const dep = departmentOf(id), order = Object.keys(RARITIES) as Rarity[];
+    if (!dep) return null;
+    for (let r = order.indexOf(EQUIPMENT[id].rarity) - 1; r >= 0; r--) {
+      const prev = EQUIPMENT_IDS.filter((it) => EQUIPMENT[it].rarity === order[r] && departmentOf(it) === dep);
+      if (prev.length) return prev.every((it) => this.data.inventory[it]) ? null : order[r]!;
+    }
+    return null;
   }
 
   buy(id: ShopItemId): boolean {
@@ -283,19 +306,13 @@ class Session {
     return null;
   }
 
-  /** Орда «Рейтинга»: все виды врагов из пройденных арен сюжета (пусто — рейтинг ещё закрыт). */
-  get ratingMobs(): EnemyTypeId[] {
-    const mobs = new Set<EnemyTypeId>();
-    for (const loc of LOCATIONS) if (this.data.cleared.includes(loc.id)) for (const m of loc.mobs) mobs.add(m);
-    return [...mobs];
-  }
 
-  /** Конец вылазки: пройдено floors этажей подряд — запоминается больший результат. Возвращает, побит ли рекорд. */
-  recordArenaFloors(id: LocationId, floors: number): { count: number; record: boolean } {
+  /** Конец вылазки: пройдено floors этажей — запоминается больший результат. Возвращает итог, побит ли рекорд и рекорд арены. */
+  recordArenaFloors(id: LocationId, floors: number): { count: number; record: boolean; best: number } {
     const record = floors > (this.data.arenaBest[id] ?? 0);
     if (record) this.data.arenaBest[id] = floors;
     this.save();
-    return { count: floors, record };
+    return { count: floors, record, best: this.data.arenaBest[id] ?? 0 };
   }
 
   isUnlocked(id: LocationId): boolean {
@@ -324,7 +341,7 @@ class Session {
   get pocketItems(): EquipmentId[] { return EQUIPMENT_IDS.filter((id) => this.data.inventory[id] && !this.data.equipped[id] && !this.data.chest.includes(id)); }
   get pocketsFree(): number { return POCKETS - this.pocketItems.length; }
   get chestUnlocked(): boolean { return this.data.chestLevel > 0; }
-  get chestCapacity(): number { return this.data.chestLevel * CHEST.perLevel; }
+  get chestCapacity(): number { return chestCapacity(this.data.chestLevel); }
   /** Цена следующего шага: купить доступ к сундуку или следующий уровень; null — уже максимум. */
   get chestNextPrice(): number | null {
     const lv = this.data.chestLevel;

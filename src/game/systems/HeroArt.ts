@@ -3,7 +3,7 @@ import { HERO_SHEET, PLAYER_DIRECTIONS, type PlayerDirection } from '../configs/
 import { GAME } from '../configs/game';
 import { add, CAMERA_PITCH, cross, dot, MODEL_AXES, mul, norm, project, renderModel, sub, type Axes, type Mark, type Paint, type Part, type Shade, type Surface, type Vec } from './Rig3D';
 import { addOutline, addVolume, ramp, type Ramp } from './Volume';
-import { readableCanvas, strips } from './CastleModels';
+import { deferredCanvas, readableCanvas, strips, uploadJobs } from './CastleModels';
 
 /*
  * Персонажи — объёмные куклы со скелетом.
@@ -76,7 +76,7 @@ export interface Build {
 }
 
 const HUMAN_BUILD: Build = {
-  frame: S, ground: 30,
+  frame: S, ground: 34,
   leg: { hip: 1.7, thigh: 3.8, shin: 3.6, r: [1.55, 1.3], foot: [1.35, 1, 1.9], toe: 0.7 },
   pelvis: [3, 1.9, 2], torso: { y: 5, z: 0, r: [3.7, 3.9, 2.4] }, shoulder: { w: 3.5, y: 7.6 },
   head: { y: 12.6, z: 0.3, r: [4, 4, 3.7] }, neck: 1.3,
@@ -127,7 +127,8 @@ const HOLD = { shoulder: 20, elbow: 50, spread: 18, roll: 22 } as const;
 /** Свободная рука: лёгкий сгиб в локте, чуть в сторону от тела. */
 const FREE = { elbow: 14, spread: 8, walkBend: 12 } as const;
 
-type Strike = 'overhead' | 'diagonal';
+/** Как бьёт: крупные — сверху вниз, люди — по диагонали; у некоторого оружия свой удар (GEAR[…].strike). */
+type Strike = 'overhead' | 'diagonal' | 'sweep' | 'draw' | 'thrust';
 /**
  * Кадр удара (градусы): плечо s (вперёд от «вниз»; 90 — вперёд, 180 — вверх) и sp (наружу от тела, минус — поперёк груди),
  * сгиб локтя e; куда смотрит оружие — w и wsp (так же, как рука); lean — корпус подаётся вперёд (доля высоты туловища);
@@ -162,6 +163,35 @@ const STRIKES: Record<Strike, readonly StrikeKey[]> = {
     { s: 55, sp: -35, e: 5, w: 25, wsp: -50, lean: 0.18, free: -25 },
     { s: 40, sp: -10, e: 30, w: 120, wsp: -10, lean: 0.06, free: 0 },
   ],
+  // горизонтальный взмах (катана): клинок отведён вправо → быстро проходит перед собой на уровне груди → уходит влево;
+  // клинок смотрит вперёд и чуть вверх, а не вбок и не вниз, — иначе кончик вылезал бы за край кадра (в профиль — вбок,
+  // лицом к нам — под ноги)
+  sweep: [
+    { s: 85, sp: 45, e: 35, w: 115, wsp: 35, lean: -0.04, free: 15 },
+    { s: 85, sp: 30, e: 20, w: 112, wsp: 24, lean: 0, free: 5 },
+    { s: 82, sp: 8, e: 10, w: 110, wsp: 6, lean: 0.08, free: -10 },
+    { s: 80, sp: -18, e: 5, w: 110, wsp: -22, lean: 0.16, free: -25 },
+    { s: 78, sp: -30, e: 10, w: 112, wsp: -34, lean: 0.14, free: -25 },
+    { s: 45, sp: -10, e: 30, w: 120, wsp: -10, lean: 0.04, free: 0 },
+  ],
+  // выпад древком (глефа): обе руки отводят древко к бедру → резко вперёд на всю длину → возврат
+  thrust: [
+    { s: 55, sp: 15, e: 75, w: 92, wsp: 4, lean: -0.08, free: 40 },
+    { s: 60, sp: 12, e: 60, w: 92, wsp: 4, lean: -0.04, free: 45 },
+    { s: 75, sp: 8, e: 25, w: 90, wsp: 2, lean: 0.1, free: 60 },
+    { s: 88, sp: 4, e: 0, w: 90, wsp: 0, lean: 0.22, free: 72 },
+    { s: 86, sp: 4, e: 5, w: 90, wsp: 0, lean: 0.18, free: 62 },
+    { s: 50, sp: 12, e: 40, w: 110, wsp: 6, lean: 0.04, free: 20 },
+  ],
+  // выстрел из лука: лук вперёд на вытянутой руке (вертикально), вторая рука натягивает тетиву к груди → отпускает
+  draw: [
+    { s: 60, sp: 15, e: 30, w: 170, wsp: 10, lean: 0, free: 40 },
+    { s: 80, sp: 10, e: 10, w: 178, wsp: 4, lean: 0, free: 70 },
+    { s: 90, sp: 5, e: 0, w: 180, wsp: 0, lean: -0.04, free: 88 },
+    { s: 90, sp: 5, e: 0, w: 180, wsp: 0, lean: -0.08, free: 35 },
+    { s: 86, sp: 8, e: 5, w: 178, wsp: 0, lean: -0.04, free: 25 },
+    { s: 50, sp: 15, e: 30, w: 160, wsp: 10, lean: 0, free: 15 },
+  ],
 };
 /** Сторона по x модели: правая (−x) и левая (+x); суффиксы имён частей тела. */
 const SIDES = [-1, 1] as const;
@@ -186,9 +216,9 @@ function armDir(pitch: number, spread: number, side: number): Vec {
   return [side * Math.sin(spread), -Math.cos(pitch) * Math.cos(spread), Math.sin(pitch) * Math.cos(spread)];
 }
 
-function poseFor(B: Build, kind: PoseKind, p: number, armed: boolean): Pose {
+function poseFor(B: Build, kind: PoseKind, p: number, armed: boolean, style: Strike = B.strike): Pose {
   const walk = kind === 'walk', ph = p * TAU;
-  const strike = kind === 'attack' ? STRIKES[B.strike][Math.round(p * HERO_SHEET.attackFrames)]! : null;
+  const strike = kind === 'attack' ? STRIKES[style][Math.round(p * HERO_SHEET.attackFrames)]! : null;
   // ноги в противофазе; нога, идущая вперёд, сгибает колено (перенос)
   const phase = [0, Math.PI];
   const legs = SIDES.map((side, i) => {
@@ -254,6 +284,7 @@ type Dresser = (d: Dressing) => void;
 function ball(c: Vec, r: Vec, paint: Paint, axes?: Axes): Part { return { shape: axes ? { kind: 'ball', c, r, axes } : { kind: 'ball', c, r }, paint }; }
 function rod(a: Vec, b: Vec, r: number, paint: Paint): Part { return { shape: { kind: 'rod', a, b, r }, paint }; }
 function brick(c: Vec, r: Vec, axes: Axes, paint: Paint): Part { return { shape: { kind: 'box', c, r, axes }, paint }; }
+function cylPart(a: Vec, b: Vec, r: number, paint: Paint): Part { return { shape: { kind: 'cyl', a, b, r }, paint }; }
 function flat(color: string): Paint { return () => color; }
 function both(name: string): string[] { return [name + SIDE[0], name + SIDE[1]]; }
 
@@ -338,8 +369,16 @@ const M = {
   gold: ramp('#c8a048'), wood: ramp('#8a5328'),
   /** Полированная сталь светлая даже в тени — клинок не теряется на кольчуге. */
   steel: ['#ffffff', '#f4f8fc', '#dde5ee', '#c2cbd8', '#a2acbc'], iron: ramp('#7a7f88'), ironDark: ramp('#4e525a'),
+  /** Полированные латы стража (ярче железа), алый плюмаж, тёмное древко, лук охотника. */
+  guardPlate: ['#ffffff', '#e8eef6', '#c6cedc', '#9aa4b6', '#6e788c'], plume: ramp('#c8303c'), woodDark: ramp('#5a3a22'),
+  hunterWood: ramp('#3e2a1e'), hunterGrip: ramp('#3a6a3a'),
+  /** Оплётка рукояти катаны, кожа ската под ней, ржавчина; синяя обмотка меча рыцаря. */
+  wrap: ramp('#34324a'), rayskin: ramp('#d8d0bc'), rust: ramp('#9a5430'), royal: ramp('#2e4a8a'), ironLight: ramp('#a2a8b2'),
   /** Дол клинка — желобок посередине, чуть темнее полотна. */
   fuller: ['#e6edf5', '#cfd8e3', '#b5c0ce', '#97a3b4', '#7a8698'],
+  // зачарованные клинки: раскалённая сталь огненной катаны и голубой лёд двуручника
+  ember: ['#fff4c0', '#ffc860', '#ff8a2a', '#d8481a', '#8a2410'], emberDark: ramp('#5a1e14'),
+  ice: ['#ffffff', '#e4f6ff', '#b4e0f8', '#7ab4dc', '#4a7aa8'], iceDeep: ['#d8f2ff', '#a8d8f4', '#78b4e0', '#4a86bc', '#2a5a8a'], frostWrap: ramp('#3a5a8a'),
   cloth: ramp('#6e4c30'), clothDark: ramp('#4a3220'), fur: ramp('#8a7458'), fletch: ramp('#c84a4a'),
   robe: ramp('#4a3062'), robeFold: ramp('#3a2450'), armor: ramp('#4a3e64'), plate: ramp('#5e5080'),
   orb: ['#ffffff', '#f0c8ff', '#c070ff', '#8030d0', '#4a1880'],
@@ -347,7 +386,7 @@ const M = {
 /** Цвета без светотени: глаза, впадины, огонь, руны. */
 const C = {
   eye: '#1d1822', skinShade: '#b07a58', hollow: '#2a2430', eyeGlow: '#ff5a4a', eyeDim: '#7a2a2a',
-  gem: '#d0303c', rivet: '#9aa2ae', orcEye: '#ff4a2a', ogreEye: '#ffd040', mouth: '#2a1418', nail: '#e8dcc0', rust: '#8a5a3a', steelLight: '#f0f4f8', gold: '#f2d060',
+  gem: '#d0303c', sapphire: '#4a8ae8', runeBlue: '#8ad8ff', rivet: '#9aa2ae', orcEye: '#ff4a2a', ogreEye: '#ffd040', mouth: '#2a1418', nail: '#e8dcc0', rust: '#8a5a3a', steelLight: '#f0f4f8', gold: '#f2d060',
   rune: '#c060ff', runeBright: '#e0a0ff', flame: '#8a30e0', flameTip: '#e0a0ff', void: '#0e0818', white: '#ffffff', string: '#e8e0c8',
 } as const;
 
@@ -485,7 +524,8 @@ export type BodyId = keyof typeof BODIES;
 // ---------------- вещи ----------------
 export const GEAR_SLOTS = ['legs', 'body', 'belt', 'head', 'hands', 'weapon'] as const;
 export type GearSlot = (typeof GEAR_SLOTS)[number];
-interface GearVisual { slot: GearSlot; dress: Dresser }
+/** Вещь на кукле: слот, как надевается; у оружия — свой удар (иначе — удар телосложения). */
+interface GearVisual { slot: GearSlot; dress: Dresser; strike?: Strike }
 
 /** Заклёпок по ободу шлема. */
 const HELM_RIVETS = 6;
@@ -510,12 +550,134 @@ function bladeOut(P: Pose): Vec {
  */
 /** Крупнее настоящего — сверху меч должен читаться (преувеличенные пропорции). */
 const SWORD = { mid: 8.4, half: 6.3, width: 1.25, edge: 0.7, tipFrom: 0.74, guard: 2.9, wraps: 4 } as const;
+/** Ледяной двуручник (зачарованный): клинок длиннее и шире меча рыцаря, длинная рукоять. */
+const ICE_SWORD = { mid: 11.2, half: 8.8, width: 1.8, edge: 0.95, tipFrom: 0.8, guard: 4.4, wraps: 6 } as const;
+/** Размеры меча (swordParts): середина и полудлина клинка, полуширина, кромка, где начинается острие, гарда, витков обмотки. */
+type SwordSize = { mid: number; half: number; width: number; edge: number; tipFrom: number; guard: number; wraps: number };
+/** Цвета клинка: кромки и дол (у льда — свои). */
+type BladeLook = { edge: Ramp; fuller: Ramp };
 /** Дубина огра: от кисти вниз и вверх, к верху толще; в навершие вбиты шипы. */
 const CLUB = { from: -3, length: 19, segments: 5, r0: 0.9, r1: 2.4, spikes: [11, 14, 17] } as const;
 /** Сфера Короля Бездны: центр выше кулака на lift пикселей экрана, радиус r. Отсюда же вылетают огненные шары. */
 export const ORB = { lift: 7, r: 4 } as const;
-/** Лук: полудлина плеча, насколько концы отогнуты назад к лучнику. */
-const BOW = { half: 7.5, bend: 2.6 } as const;
+/** Лук: полудлина плеча, насколько концы отогнуты назад к лучнику, сколько звеньев в дуге. */
+const BOW = { half: 7.5, bend: 2.6, links: 8 } as const;
+/** Меч рыцаря (редкий): длиннее и шире старого меча, гарда с расширенными концами, сапфир в навершии. */
+const KNIGHT_SWORD = { mid: 10.2, half: 8, width: 1.4, edge: 0.75, tipFrom: 0.78, guard: 3.6, wraps: 5 } as const;
+/**
+ * Ржавая катана: рукоять (от и до вдоль кулака), где круглая цуба, длина клинка, звеньев изгиба, насколько клинок
+ * выгнут назад к концу, полуширина; ржавчина — доля пятен.
+ */
+const KATANA = { grip: [-3.4, 1.1], tsuba: 1.5, blade: 15, links: 5, curve: 1.6, width: 0.8, rust: 0.62 } as const;
+/** Топор орка: где лезвие на топорище, насколько выступает, зазубрин на кромке, длина костяного шипа на обухе. */
+const ORC_AXE = { head: 7.4, reach: 2, notches: 4, spike: 2.4 } as const;
+
+/**
+ * Меч по размерам S: навершие с камнем (gem), рукоять в обмотке, гарда с шарами на концах; плоскость клинка смотрит вбок
+ * (в профиль клинок широкий), кромки — вперёд и назад; дол посередине, светлые кромки.
+ */
+function swordParts({ parts, marks, pose: P }: Dressing, S: SwordSize, gem: string, wrap: Ramp, look: BladeLook = { edge: M.steel, fuller: M.fuller }): void {
+  parts.set('pommel', ball(onGrip(P, -2.6), [0.95, 0.95, 0.95], M.gold));
+  marks.push({ p: onGrip(P, -2.6, 0, -0.95), color: gem }, { p: onGrip(P, -2.6, 0, 0.95), color: gem });
+  parts.set('hilt', rod(onGrip(P, -2.1), onGrip(P, 1.2), 0.6, (s) => (Math.floor((s.y + 1) * S.wraps) % 2 ? wrap : M.leatherDark)));
+  parts.set('guard', brick(onGrip(P, 1.7), [0.6, MIN_HALF, S.guard], gripAxes(P), M.gold));
+  for (const end of [-1, 1]) parts.set(`guardEnd${end}`, ball(onGrip(P, 1.7, end * S.guard), [0.7, 0.7, 0.7], M.gold));
+  const tip = (across: number, y: number): boolean => y > S.tipFrom && Math.abs(across) > (1 - y) / (1 - S.tipFrom);
+  parts.set('blade', brick(onGrip(P, S.mid), [MIN_HALF, S.half, S.width], gripAxes(P), (s) => {
+    if (tip(s.z, s.y)) return null;
+    if (Math.abs(s.z) > 0.78) return look.edge;                       // режущие кромки — светлые
+    return Math.abs(s.z) < 0.22 && s.y < S.tipFrom ? look.fuller : look.edge;
+  }));
+  parts.set('bladeEdge', brick(onGrip(P, S.mid), [S.edge, S.half, MIN_HALF], gripAxes(P), (s) => (tip(s.x, s.y) ? null : look.edge)));
+}
+
+/** Лук: плечи изгибаются дугой (середина — в кулаке, концы отогнуты назад), у кулака обмотка, на концах роговые накладки; тетива прямая. */
+function bowParts(d: Dressing): void { bowOf(d, M.wood, M.leather, M.bone); }
+/** Лук своих цветов: дерево плеч, обмотка у кулака, накладки на концах. */
+function bowOf({ parts, marks, pose: P }: Dressing, wood: Ramp, grip: Ramp, tips: Ramp): void {
+  const n = BOW.links, pts = Array.from({ length: n + 1 }, (_, i) => { const t = (i / n) * 2 - 1; return onGrip(P, t * BOW.half, -t * t * BOW.bend); });
+  for (let i = 0; i < n; i++) {
+    const mid = Math.abs(i + 0.5 - n / 2) < 1;
+    parts.set(`bow${i}`, rod(pts[i]!, pts[i + 1]!, mid ? 0.7 : 0.6 - Math.abs(i + 0.5 - n / 2) * 0.03, mid ? grip : wood));
+  }
+  for (const end of [0, n]) parts.set(`bowTip${end}`, ball(pts[end]!, [0.65, 0.65, 0.65], tips));
+  parts.set('bowString', rod(pts[0]!, pts[n]!, 0.5, flat(C.string)));
+  // волокна дерева — тёмные риски по плечам
+  for (const i of [1, 2, n - 2, n - 1]) marks.push({ p: lerpVec(pts[i]!, pts[i + 1]!, 0.5), color: '#5a3418' });
+}
+
+/** Топор орка: топорище в кожаной обмотке, лезвие полумесяцем наружу-вперёд с зазубренной кромкой, на обухе — костяной шип. */
+function axeParts({ parts, marks, pose: P }: Dressing): void {
+  parts.set('haft', rod(onGrip(P, -4.5), onGrip(P, 9.5), 0.7, M.wood));
+  parts.set('haftWrap', rod(onGrip(P, -1.6), onGrip(P, 1.6), 0.85, (s) => (Math.floor((s.y + 1) * 3) % 2 ? M.leather : M.leatherDark)));
+  const out = bladeOut(P), A = ORC_AXE;
+  const axes: Axes = [norm(cross(P.grip.up, out)), P.grip.up, out];
+  parts.set('axeHead', brick(add(onGrip(P, A.head), mul(out, A.reach)), [MIN_HALF, 2.4, 1.9], axes, (s) => {
+    if (s.z < 0 && Math.abs(s.y) > 0.45 + s.z * 0.5 + 0.5) return null;   // к топорищу уже — полумесяц
+    if (s.z > 0.82 && Math.floor((s.y + 1) * A.notches) % 2 === 0) return null;   // зазубрины на кромке
+    return s.z > 0.55 ? M.steel : M.iron;
+  }));
+  parts.set('axeSpike', rod(onGrip(P, A.head), add(onGrip(P, A.head + 0.6), mul(out, -A.spike)), 0.45, M.bone));
+  marks.push({ p: add(onGrip(P, A.head), mul(out, A.reach - 0.6)), color: C.rust });
+}
+
+/**
+ * Ржавая катана: оплётка рукояти ромбами, круглая цуба; клинок звеньями выгибается назад к концу, острие срезано наискось
+ * от обуха к кромке; кромка светлая, обух темнее, по клинку — пятна ржавчины.
+ */
+function katanaParts(d: Dressing): void { katanaOf(d, null); }
+/** Катана; fire — раскалённый клинок огненной катаны (без ржавчины, кромка светлее, по клинку — искры). */
+function katanaOf({ parts, marks, pose: P }: Dressing, fire: { edge: Ramp; back: Ramp } | null): void {
+  const K = KATANA, g = P.grip;
+  parts.set('katanaGrip', rod(onGrip(P, K.grip[0]), onGrip(P, K.grip[1]), 0.62, (s) => (((s.y + 1) * 5 + (s.x + 1) * 2) % 1 < 0.5 ? M.wrap : M.rayskin)));
+  parts.set('katanaCap', ball(onGrip(P, K.grip[0] - 0.3), [0.7, 0.5, 0.7], M.iron));
+  parts.set('tsuba', ball(onGrip(P, K.tsuba), [1.7, 0.35, 1.7], M.ironDark, gripAxes(P)));
+  marks.push({ p: onGrip(P, K.tsuba + 0.3, 1.2), color: C.rust });
+  const at = (t: number): Vec => onGrip(P, K.tsuba + 0.4 + t * K.blade, -K.curve * t * t);
+  for (let i = 0; i < K.links; i++) {
+    const a = at(i / K.links), b = at((i + 1) / K.links), dir = norm(sub(b, a)), last = i === K.links - 1;
+    const axes: Axes = [g.side, dir, norm(cross(g.side, dir))];
+    const half = Math.hypot(...sub(b, a)) / 2 + 0.15;
+    parts.set(`katana${i}`, brick(lerpVec(a, b, 0.5), [MIN_HALF, half, K.width], axes, (s) => {
+      if (last && s.y > -0.2 && s.z < (s.y + 0.2) * 1.7 - 1) return null;   // острие: срез от обуха к кромке
+      if (fire) return s.z > 0.4 ? fire.edge : fire.back;
+      if (hash01(i * 7 + Math.floor((s.y + 1) * 3), Math.floor((s.z + 1) * 2)) > K.rust) return M.rust;
+      return s.z > 0.4 ? M.steel : M.ironLight;
+    }));
+  }
+  if (fire) for (const t of [0.3, 0.6, 0.85]) marks.push({ p: at(t), color: '#fff4c0' });
+}
+/**
+ * Глефа стража: древко в железных кольцах (кулак — посередине), на верху — изогнутое лезвие с золотой втулкой,
+ * снизу — железный подток. GLAIVE: концы древка, длина лезвия.
+ */
+const GLAIVE = { butt: -7.5, top: 9.5, blade: 5.5 } as const;
+function glaiveParts({ parts, marks, pose: P }: Dressing): void {
+  const G = GLAIVE;
+  parts.set('glaiveShaft', rod(onGrip(P, G.butt), onGrip(P, G.top), 0.6, (s) => (Math.abs(((s.y + 1) * 4) % 1 - 0.5) < 0.08 ? M.iron : M.woodDark)));
+  parts.set('glaiveButt', ball(onGrip(P, G.butt - 0.4), [0.7, 0.9, 0.7], M.iron));
+  parts.set('glaiveCollar', rod(onGrip(P, G.top - 0.4), onGrip(P, G.top + 0.6), 0.85, M.gold));
+  const out = bladeOut(P), axes: Axes = [norm(cross(P.grip.up, out)), P.grip.up, out];
+  parts.set('glaiveBlade', brick(add(onGrip(P, G.top + G.blade / 2 + 0.4), mul(out, 0.6)), [MIN_HALF, G.blade / 2, 1.3], axes, (s) => {
+    if (s.y > 0.4 && s.z < (s.y - 0.4) * 3 - 1) return null;   // кончик загнут к кромке
+    return s.z > 0.5 ? M.steel : M.ironLight;
+  }));
+  marks.push({ p: onGrip(P, G.top + 0.1, 0, 0.9), color: C.sapphire });
+}
+
+/** Молот грома: топорище в обмотке, тяжёлый боёк поперёк с золотыми обручами, на торцах — голубые руны. */
+const HAMMER = { haft: [-4, 9], head: 9.6, half: 2.8, r: 1.7 } as const;
+function hammerParts({ parts, marks, pose: P }: Dressing): void {
+  const H = HAMMER;
+  parts.set('hammerHaft', rod(onGrip(P, H.haft[0]), onGrip(P, H.haft[1]), 0.7, M.woodDark));
+  parts.set('hammerWrap', rod(onGrip(P, -1.4), onGrip(P, 1.4), 0.85, (s) => (Math.floor((s.y + 1) * 3) % 2 ? M.royal : M.leatherDark)));
+  const out = bladeOut(P), a = add(onGrip(P, H.head), mul(out, -H.half)), b = add(onGrip(P, H.head), mul(out, H.half));
+  parts.set('hammerHead', cylPart(a, b, H.r, (s) => (Math.abs(s.y) > 0.62 && Math.abs(s.y) < 0.82 ? M.gold : M.iron)));
+  for (const end of [a, b]) marks.push({ p: end, color: C.runeBlue });
+}
+
+/** Предсказуемый «случайный» шум 0..1 по двум целым (пятна ржавчины одинаковые в каждом кадре). */
+function hash01(a: number, b: number): number { const h = Math.sin(a * 127.1 + b * 311.7) * 43758.5453; return h - Math.floor(h); }
 
 /** Стёганая ткань: ромбы швов (тёмные линии по двум диагоналям) — у каждой поверхности свой узор, не плоский цвет. */
 function quilted(x: number, y: number): Ramp {
@@ -638,6 +800,59 @@ export const GEAR = {
       repaint(parts, ['torso'], (s, under) => (Math.abs(s.x * 0.8 - s.y) < 0.16 ? M.leather : under(s)));
     },
   },
+  // ---------------- латы стража (редкие доспехи) ----------------
+  guardHelm: {
+    slot: 'head',
+    // полированный шлем стража: золотой обод, нащёчники, золотой гребень и алый плюмаж, изогнутый назад
+    dress: ({ parts, pose: P, build: B }) => {
+      for (const key of ['hair', 'ear-1', 'ear1']) parts.delete(key);
+      const r = mul(B.head.r, 1.15);
+      parts.set('helm', ball(add(P.head, [0, 0.45, 0]), r, (s) => {
+        if (s.y < -0.05 && !(s.z < -0.25 && s.y > -0.7)) return null;
+        return s.y < 0.14 && s.y > -0.05 ? M.gold : M.guardPlate;
+      }));
+      for (const side of [-1, 1]) parts.set(`cheek${side}`, brick(add(P.head, [side * r[0] * 0.84, -0.7, r[2] * 0.2]), [MIN_HALF, 1.7, 1.5], MODEL_AXES, M.guardPlate));
+      const top = add(P.head, [0, 0.45 + r[1] * 0.93, 0]);
+      parts.set('crest', rod(add(top, [0, -r[1] * 0.1, r[2] * 0.6]), add(top, [0, -r[1] * 0.08, -r[2] * 0.6]), 0.6, M.gold));
+      for (let i = 0; i < 5; i++) {
+        const t = i / 4;
+        parts.set(`plume${i}`, ball(add(top, [0, 0.9 + Math.sin(t * Math.PI) * 1.5, r[2] * (0.35 - t * 1.35)]), [0.85, 1.25 - t * 0.35, 1.1], M.plume));
+      }
+    },
+  },
+  guardCuirass: {
+    slot: 'body',
+    // полированная кираса: золотая кайма у горла и по низу, золотой крест-герб спереди, круглые наплечники, рукава — кольчуга
+    dress: ({ parts, pose: P }) => {
+      repaint(parts, ['torso'], (s) => {
+        if (s.y > 0.8 || (s.y < -0.52 && s.y > -0.68)) return M.gold;
+        if (s.y < -0.68) return M.leather;
+        if (s.z > 0.35 && ((Math.abs(s.x) < 0.08 && s.y > -0.4 && s.y < 0.6) || (Math.abs(s.y - 0.22) < 0.07 && Math.abs(s.x) < 0.3))) return M.gold;
+        return M.guardPlate;
+      });
+      repaint(parts, both('upper'), (s) => mailAt({ ...s, x: s.x * 0.5 }));
+      P.arms.forEach((a, i) => parts.set(`pauldron${SIDE[i]}`, ball(add(a.a, [SIDES[i] * 0.5, 0.5, 0]), [2.1, 1.6, 2.1], (s) => (s.y < -0.55 ? M.gold : M.guardPlate))));
+    },
+  },
+  guardGreaves: {
+    slot: 'legs',
+    // латы на ногах: бёдра и голени в стали, золотой поясок на голени, золотые наколенники, стальные башмаки
+    dress: ({ parts, pose: P, build: B }) => {
+      repaint(parts, ['pelvis'], () => M.trousers);
+      repaint(parts, both('thigh'), () => M.guardPlate);
+      repaint(parts, both('shin'), (s) => (Math.abs(s.y + 0.1) < 0.09 ? M.gold : M.guardPlate));
+      repaint(parts, both('foot'), () => M.guardPlate);
+      P.legs.forEach((l, i) => parts.set(`knee${SIDE[i]}`, ball(add(l.b, [0, 0, 0.45]), mul([1, 1, 1], B.leg.r[0] * 1.05), M.gold)));
+    },
+  },
+  guardGauntlets: {
+    slot: 'hands',
+    // латные рукавицы: сталь на кистях и пальцах, золотой раструб на предплечье
+    dress: ({ parts }) => {
+      repaint(parts, [...handNames(SIDE[0]), ...handNames(SIDE[1])], () => M.guardPlate);
+      repaint(parts, both('fore'), (s, under) => (s.y > -0.2 ? (s.y < 0.15 ? M.gold : M.guardPlate) : under(s)));
+    },
+  },
   stick: {
     slot: 'weapon',
     dress: ({ parts, marks, pose: P }) => {
@@ -647,47 +862,37 @@ export const GEAR = {
   },
   sword: {
     slot: 'weapon',
-    // как в настоящем хвате: плоскость клинка смотрит вбок (в профиль клинок виден широким), кромки — вперёд и назад;
-    // узкое второе сечение даёт клинку ширину и при взгляде спереди и сзади. Дол посередине, светлые кромки,
-    // гарда с шарами на концах, рукоять в обмотке, навершие с камнем.
-    dress: ({ parts, marks, pose: P }) => {
-      const S = SWORD;
-      parts.set('pommel', ball(onGrip(P, -2.6), [0.95, 0.95, 0.95], M.gold));
-      marks.push({ p: onGrip(P, -2.6, 0, -0.95), color: C.gem }, { p: onGrip(P, -2.6, 0, 0.95), color: C.gem });
-      parts.set('hilt', rod(onGrip(P, -2.1), onGrip(P, 1.2), 0.6, (s) => (Math.floor((s.y + 1) * S.wraps) % 2 ? M.leather : M.leatherDark)));
-      parts.set('guard', brick(onGrip(P, 1.7), [0.6, MIN_HALF, S.guard], gripAxes(P), M.gold));
-      for (const end of [-1, 1]) parts.set(`guardEnd${end}`, ball(onGrip(P, 1.7, end * S.guard), [0.7, 0.7, 0.7], M.gold));
-      const tip = (across: number, y: number): boolean => y > S.tipFrom && Math.abs(across) > (1 - y) / (1 - S.tipFrom);
-      parts.set('blade', brick(onGrip(P, S.mid), [MIN_HALF, S.half, S.width], gripAxes(P), (s) => {
-        if (tip(s.z, s.y)) return null;
-        if (Math.abs(s.z) > 0.78) return M.steel;                         // режущие кромки — светлые
-        return Math.abs(s.z) < 0.22 && s.y < S.tipFrom ? M.fuller : M.steel;
-      }));
-      parts.set('bladeEdge', brick(onGrip(P, S.mid), [S.edge, S.half, MIN_HALF], gripAxes(P), (s) => (tip(s.x, s.y) ? null : M.steel)));
-    },
+    dress: (d) => swordParts(d, SWORD, C.gem, M.leather),
   },
-  bow: {
+  /** Меч рыцаря (редкий): длинный клинок, золотая гарда, сапфир в навершии, синяя обмотка; бьёт по диагонали. */
+  knightSword: {
     slot: 'weapon',
-    // плечи лука изгибаются дугой (середина — в кулаке, концы отогнуты назад), тетива прямая
-    dress: ({ parts, pose: P }) => {
-      const pts = Array.from({ length: 7 }, (_, i) => { const t = i / 3 - 1; return onGrip(P, t * BOW.half, -t * t * BOW.bend); });
-      for (let i = 0; i < 6; i++) parts.set(`bow${i}`, rod(pts[i]!, pts[i + 1]!, 0.6, i === 2 || i === 3 ? M.leather : M.wood));
-      parts.set('bowString', rod(pts[0]!, pts[6]!, 0.5, flat(C.string)));
+    dress: (d) => {
+      swordParts(d, KNIGHT_SWORD, C.sapphire, M.royal);
+      const { parts, pose: P } = d;
+      // золотая пята клинка над гардой и расширенные концы гарды
+      parts.set('ricasso', brick(onGrip(P, 2.6), [0.55, 0.5, KNIGHT_SWORD.width * 0.8], gripAxes(P), M.gold));
+      for (const end of [-1, 1]) parts.set(`guardEnd${end}`, ball(onGrip(P, 1.9, end * KNIGHT_SWORD.guard), [0.9, 1.1, 0.9], M.gold));
     },
   },
-  axe: {
-    slot: 'weapon',
-    // топорище и полукруглое лезвие наружу-вперёд, светлая заточенная кромка
-    dress: ({ parts, pose: P }) => {
-      parts.set('haft', rod(onGrip(P, -4.5), onGrip(P, 9.5), 0.7, M.wood));
-      const out = bladeOut(P);
-      const axes: Axes = [norm(cross(P.grip.up, out)), P.grip.up, out];
-      parts.set('axeHead', brick(add(onGrip(P, 7.4), mul(out, 2)), [MIN_HALF, 2.4, 1.9], axes, (s) => {
-        if (s.z < 0 && Math.abs(s.y) > 0.45 + s.z * 0.5 + 0.5) return null;   // к топорищу уже — полумесяц
-        return s.z > 0.6 ? M.steel : M.iron;
-      }));
-    },
-  },
+  /** Ржавая катана: быстрый горизонтальный взмах. */
+  katana: { slot: 'weapon', strike: 'sweep', dress: katanaParts },
+  /** Огненная катана (зачарованная): раскалённый клинок, тот же быстрый взмах. */
+  fireKatana: { slot: 'weapon', strike: 'sweep', dress: (d) => katanaOf(d, { edge: M.ember, back: M.emberDark }) },
+  /** Ледяной двуручник (зачарованный): длинный ледяной клинок, бьёт сверху вниз. */
+  iceGreatsword: { slot: 'weapon', strike: 'overhead', dress: (d) => swordParts(d, ICE_SWORD, C.runeBlue, M.frostWrap, { edge: M.ice, fuller: M.iceDeep }) },
+  /** Лук скелета-лучника (без кадров удара). */
+  bow: { slot: 'weapon', dress: bowParts },
+  /** Деревянный лук героя: тот же лук, с кадрами выстрела (натянуть — отпустить). */
+  woodBow: { slot: 'weapon', strike: 'draw', dress: bowParts },
+  /** Топор орка (и у орков, и у героя): тяжёлый удар наискось перед собой. */
+  axe: { slot: 'weapon', dress: axeParts },
+  /** Глефа стража (редкая): выпад древком вперёд. */
+  glaive: { slot: 'weapon', strike: 'thrust', dress: glaiveParts },
+  /** Молот грома (редкий): тяжёлый удар наискось. */
+  hammer: { slot: 'weapon', dress: hammerParts },
+  /** Лук охотника (редкий): тёмное дерево, зелёная обмотка, золотые накладки; залп тремя стрелами (Player). */
+  hunterBow: { slot: 'weapon', strike: 'draw', dress: (d) => bowOf(d, M.hunterWood, M.hunterGrip, M.gold) },
   club: {
     slot: 'weapon',
     // дубина: к верху толще, в навершие вбиты железные шипы
@@ -753,14 +958,18 @@ export function heroSheetKey(outfit: Outfit, body: BodyId = 'human'): string { r
 export function heroAnimKey(sheet: string, kind: HeroAnimKind, dir: PlayerDirection): string { return `${sheet}-${kind}-${dir}`; }
 /** Кадр удара k (0 — занесено, 3 — удар, 5 — возврат; см. STRIKES) в сторону dir. Есть только у листов с оружием ближнего боя. */
 export function heroAttackFrame(dir: PlayerDirection, k: number): string { return `attack-${dir}-${k}`; }
-/** Оружие ближнего боя: с ним в листе есть кадры удара. */
-const MELEE: ReadonlySet<GearId> = new Set<GearId>(['stick', 'sword', 'axe', 'club']);
+/** Оружие с кадрами удара в листе: ближний бой и лук героя (у лука скелета-лучника их нет). */
+const WITH_STRIKES: ReadonlySet<GearId> = new Set<GearId>(['stick', 'sword', 'knightSword', 'katana', 'fireKatana', 'iceGreatsword', 'axe', 'club', 'woodBow', 'glaive', 'hammer', 'hunterBow']);
+/** Каким ударом бьёт кукла в этой одежде: удар оружия или телосложения. */
+function strikeOf(outfit: Outfit, build: Build): Strike {
+  return (outfit.weapon ? (GEAR[outfit.weapon] as GearVisual).strike : undefined) ?? build.strike;
+}
 
 // ---------------- сборка листа ----------------
 /** Модель на один кадр: скелет в позе, тело и надетые вещи. Одна и та же для всех 8 сторон. */
 function dressFor(outfit: Outfit, body: BodyId, kind: PoseKind, p: number): Dressing {
   const { build, dress } = BODIES[body];
-  const d: Dressing = { parts: new Map(), marks: [], pose: poseFor(build, kind, p, outfit.weapon !== undefined), build };
+  const d: Dressing = { parts: new Map(), marks: [], pose: poseFor(build, kind, p, outfit.weapon !== undefined, strikeOf(outfit, build)), build };
   dress(d);
   for (const slot of GEAR_SLOTS) { const id = outfit[slot]; if (id) GEAR[id].dress(d); }
   return d;
@@ -791,12 +1000,12 @@ export function heroSheetJobs(scene: Phaser.Scene, outfit: Outfit, body: BodyId 
   const key = heroSheetKey(outfit, body);
   if (scene.textures.exists(key)) return [];
   const { build } = BODIES[body];
-  const strikes = outfit.weapon && MELEE.has(outfit.weapon) ? HERO_SHEET.attackFrames : 0, columns = COLUMNS + strikes;
+  const strikes = outfit.weapon && WITH_STRIKES.has(outfit.weapon) ? HERO_SHEET.attackFrames : 0, columns = COLUMNS + strikes, style = strikeOf(outfit, build);
   const res = sheetRes(build, columns), F = Math.round(build.frame * res), rows = PLAYER_DIRECTIONS.length;
   const perJob = Math.max(1, Math.floor(PIXELS_PER_JOB / (F * F)));
   let tex: Phaser.Textures.CanvasTexture | null = null;
   const jobs: (() => void)[] = [() => {
-    tex = readableCanvas(scene, key, F * columns, F * rows);
+    tex = deferredCanvas(scene, key, F * columns, F * rows);
     if (tex) tex.getContext().imageSmoothingEnabled = false;
   }];
   for (let col = 0; col < columns; col++) for (let row0 = 0; row0 < rows; row0 += perJob) {
@@ -812,18 +1021,18 @@ export function heroSheetJobs(scene: Phaser.Scene, outfit: Outfit, body: BodyId 
         // часть кадра этой строки, попавшая в полосу [s0, s1)
         const top = (row - row0) * F, a = Math.max(s0, top), b = Math.min(s1, top + F);
         if (b <= a || MIRROR[PLAYER_DIRECTIONS[row]!]) continue;   // левые стороны — зеркало, рисуются в конце
-        const facing = FACING[PLAYER_DIRECTIONS[row]!] * DEG, feet = kind === 'attack' ? strikeFeet(build, row, col - COLUMNS) : { x: build.frame / 2, y: build.ground };
+        const facing = FACING[PLAYER_DIRECTIONS[row]!] * DEG, feet = kind === 'attack' ? strikeFeet(build, style, row, col - COLUMNS) : { x: build.frame / 2, y: build.ground };
         renderModel({ data: img.data, width: F, x: 0, y: a, w: F, h: b - a }, feet.x * res, feet.y * res - (a - top), parts, model.marks, { facing, scale: res });
       }
     });
+    // светотень и контур — разными заданиями: у огра и Короля столбец крупный, вместе это рывок загрузки
     jobs.push(() => {
       if (!tex || !img) return;
       const c = tex.getContext();
       c.putImageData(img, x0, y0);
       addVolume(c, F, h, F, F, x0, y0);
-      addOutline(c, F, h, F, F, x0, y0);
       img = null; model = null; parts = [];
-    });
+    }, () => { if (tex) addOutline(tex.getContext(), F, h, F, F, x0, y0); });
   }
   // левые стороны: каждый кадр правой стороны, отражённый по горизонтали — по кадру за задание
   // (целая строка у огра и Короля — треть секунды: рывок загрузки)
@@ -839,19 +1048,21 @@ export function heroSheetJobs(scene: Phaser.Scene, outfit: Outfit, body: BodyId 
       c.restore();
     });
   });
+  // готовый лист — в видеокарту полосами (не одним долгим рывком)
+  jobs.push(...uploadJobs(scene, () => tex, F * columns, F * rows));
   jobs.push(() => {
     if (!tex) return;
-    tex.refresh(); tex.setFilter(Phaser.Textures.FilterMode.LINEAR);
+    tex.setFilter(Phaser.Textures.FilterMode.LINEAR);
     PLAYER_DIRECTIONS.forEach((dir, row) => {
       // если в кадрах удара фигура стоит выше — у всех кадров своя точка опоры (у ног), иначе спрайт прыгал бы
-      const lifted = strikes > 0 && STRIKES[build.strike].some((key) => key.low);
+      const lifted = strikes > 0 && STRIKES[style].some((key) => key.low);
       for (let col = 0; col < COLUMNS; col++) {
         const frame = tex!.add(String(row * COLUMNS + col), 0, col * F, row * F, F, F);
         if (lifted) pinFeet(frame, build, { x: build.frame / 2, y: build.ground });
       }
       for (let k = 0; k < strikes; k++) {
         const frame = tex!.add(heroAttackFrame(dir, k), 0, (COLUMNS + k) * F, row * F, F, F);
-        if (lifted) pinFeet(frame, build, strikeFeet(build, row, k));
+        if (lifted) pinFeet(frame, build, strikeFeet(build, style, row, k));
       }
       const anim = (kind: HeroAnimKind, start: number, count: number, frameRate: number): void => {
         const k = heroAnimKey(key, kind, dir);
@@ -913,9 +1124,9 @@ export function heroPortraitJobs(scene: Phaser.Scene, outfit: Outfit, dir: Playe
 }
 
 /** Где ноги в кадре удара k (пиксели кадра): в ударе в землю фигура приподнята и отодвинута назад (STRIKE_ROOM). */
-function strikeFeet(build: Build, row: number, k: number): { x: number; y: number } {
+function strikeFeet(build: Build, style: Strike, row: number, k: number): { x: number; y: number } {
   const F = build.frame;
-  if (!STRIKES[build.strike][k]!.low) return { x: F / 2, y: build.ground };
+  if (!STRIKES[style][k]!.low) return { x: F / 2, y: build.ground };
   const facing = FACING[PLAYER_DIRECTIONS[row]!] * DEG;
   return { x: F / 2 - Math.round(F * STRIKE_ROOM.ahead * Math.sin(facing)), y: build.ground - Math.round(F * (STRIKE_ROOM.floor + STRIKE_ROOM.below * Math.max(0, Math.cos(facing)))) };
 }
@@ -940,6 +1151,32 @@ export function gripOffset(body: BodyId, dir: PlayerDirection): { x: number; y: 
 }
 
 /** Лист кадров сразу (если его ещё нет). Возвращает ключ текстуры. */
+/**
+ * Докуда достаёт оружие в руке: самый дальний непрозрачный пиксель кадров удара вправо — от точки опоры кадра по
+ * горизонтали, в долях ширины кадра (кончик клинка, топора, глефы). Считается по готовому листу один раз; 0 — нет кадров удара.
+ */
+const tips = new Map<string, number>();
+export function weaponTip(scene: Phaser.Scene, sheet: string): number {
+  const known = tips.get(sheet);
+  if (known !== undefined) return known;
+  const tex = scene.textures.get(sheet);
+  let best = 0;
+  if (tex instanceof Phaser.Textures.CanvasTexture) for (let k = 0; k < HERO_SHEET.attackFrames; k++) {
+    const name = heroAttackFrame('right', k);
+    if (!tex.has(name)) break;
+    const f = tex.get(name), W = f.cutWidth, px = (f.customPivot ? f.pivotX : 0.5) * W;
+    const data = tex.getContext().getImageData(f.cutX, f.cutY, W, f.cutHeight).data;
+    // справа налево — до первого столбца, где есть непрозрачный пиксель
+    for (let x = W - 1; x > px + best * W; x--) {
+      let solid = false;
+      for (let y = 0; y < f.cutHeight && !solid; y++) solid = data[(y * W + x) * 4 + 3]! > 128;
+      if (solid) { best = (x - px) / W; break; }
+    }
+  }
+  tips.set(sheet, best);
+  return best;
+}
+
 export function ensureHeroSheet(scene: Phaser.Scene, outfit: Outfit, body: BodyId = 'human'): string {
   for (const job of heroSheetJobs(scene, outfit, body)) job();
   return heroSheetKey(outfit, body);

@@ -48,6 +48,8 @@ export abstract class WorldScene extends Phaser.Scene implements Arena {
   protected mapW = 0;
   protected mapH = 0;
   transitioning = false;
+  /** Бой: на арене — да, в замке — нет (магия из сумки действует только в бою). */
+  readonly combat: boolean = false;
 
   private prompt!: PText;
   private holdGfx!: Phaser.GameObjects.Graphics;
@@ -213,6 +215,8 @@ export abstract class WorldScene extends Phaser.Scene implements Arena {
   playerStrike(_x: number, _y: number, _dx: number, _dy: number, _range: number, _arc: number, _damage: number): number { return 0; }
 
   hurtPlayer(amount: number, fromX: number, fromY: number): void { this.player.hurt(amount, fromX, fromY); }
+
+  nearestEnemy(_x: number, _y: number, _range: number): (Point & { active: boolean }) | null { return null; }
 
   shake(intensity: number, ms = 150): void { this.cameras.main.shake(ms, intensity); }
 

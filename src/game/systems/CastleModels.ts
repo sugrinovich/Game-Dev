@@ -83,6 +83,53 @@ export function readableCanvas(scene: Phaser.Scene, key: string, w: number, h: n
   return scene.textures.addCanvas(key, canvas);
 }
 
+/** Сколько пикселей готового холста отправлять в видеокарту за одно задание загрузки (около 10 мс). */
+const UPLOAD_PIXELS = 2048 * 512;
+/** То, что нужно от WebGL-рендера Phaser для отправки полос (в типах Phaser этих полей нет в нужном виде). */
+interface GlTexture { flipY: boolean; pma: boolean; format: number; pixels: unknown; update(src: null, w: number, h: number, flipY: boolean, ws: number, wt: number, min: number, mag: number, format: number): void }
+interface GlRenderer { gl: WebGLRenderingContext; glTextureUnits: { bind(t: GlTexture, unit: number): void }; glWrapper: { updateTexturing(s: { texturing: { flipY: boolean; premultiplyAlpha: boolean } }): void } }
+function glOf(scene: Phaser.Scene, tex: Phaser.Textures.CanvasTexture): { r: GlRenderer; t: GlTexture } | null {
+  const r = scene.renderer as unknown as Partial<GlRenderer>, t = (tex.source[0] as unknown as { glTexture?: GlTexture }).glTexture;
+  return r.gl && r.glTextureUnits && r.glWrapper && t ? { r: r as GlRenderer, t } : null;
+}
+
+/**
+ * Большой холст (лист фигур) без рывков загрузки. Обычный холст при создании сразу копируется в видеокарту целиком
+ * (ещё пустой) и потом ещё раз, когда готов, — у огра и Короля это по 50–150 мс. Здесь место в видеокарте отводится
+ * без копирования, а готовый холст уходит туда полосами — заданиями uploadJobs. Без WebGL — обычный холст.
+ */
+export function deferredCanvas(scene: Phaser.Scene, key: string, w: number, h: number): Phaser.Textures.CanvasTexture | null {
+  const tex = readableCanvas(scene, key, 1, 1), gl = tex && glOf(scene, tex);
+  if (!tex) return null;
+  if (!gl) { tex.setSize(w, h); return tex; }
+  const src = tex.source[0]!, g = gl.r.gl;
+  tex.canvas.width = w; tex.canvas.height = h;
+  src.width = w; src.height = h; Object.assign(tex, { width: w, height: h });   // как CanvasTexture.setSize, но без копирования
+  tex.get('__BASE').setSize(w, h, 0, 0);
+  gl.t.update(null, w, h, gl.t.flipY, g.CLAMP_TO_EDGE, g.CLAMP_TO_EDGE, g.LINEAR, g.LINEAR, gl.t.format);
+  return tex;
+}
+
+/** Задания: готовый холст deferredCanvas (w x h) — в видеокарту полосами по UPLOAD_PIXELS; tex — когда холст будет создан. */
+export function uploadJobs(scene: Phaser.Scene, tex: () => Phaser.Textures.CanvasTexture | null, w: number, h: number): (() => void)[] {
+  const rows = Math.max(1, Math.floor(UPLOAD_PIXELS / w)), jobs: (() => void)[] = [];
+  for (let y0 = 0; y0 < h; y0 += rows) {
+    const y1 = Math.min(h, y0 + rows);
+    jobs.push(() => {
+      const t = tex(), gl = t && glOf(scene, t);
+      if (!t) return;
+      if (!gl) { if (y1 === h) t.refresh(); return; }
+      const img = t.getContext().getImageData(0, y0, w, y1 - y0), g = gl.r.gl;
+      gl.r.glTextureUnits.bind(gl.t, 0);
+      gl.r.glWrapper.updateTexturing({ texturing: { flipY: gl.t.flipY, premultiplyAlpha: gl.t.pma } });
+      // перевёрнутая текстура (flipY) хранит строки снизу вверх: полоса [y0, y1) лежит в строках [h − y1, h − y0)
+      g.texSubImage2D(g.TEXTURE_2D, 0, 0, gl.t.flipY ? h - y1 : y0, g.RGBA, g.UNSIGNED_BYTE, img);
+      if (y1 === h) gl.t.pixels = t.canvas;   // при потере контекста видеокарты Phaser восстановит текстуру из холста
+    });
+  }
+  return jobs;
+}
+
 /**
  * Сколько пикселей холста рисовать за одно задание экрана загрузки (больше — рывок анимации загрузки):
  * со сглаживанием краёв около 20 мс — заставка не дёргается.
@@ -90,9 +137,11 @@ export function readableCanvas(scene: Phaser.Scene, key: string, w: number, h: n
 const PIXELS_PER_JOB = 96 * 64 * RES * RES;
 /**
  * Крупная модель (стена, кадр огра или короля) больше одного задания — рисуется полосами строк по столько пикселей
- * (около 10 мс): ни одно задание не дольше кадра, анимация загрузки идёт ровно.
+ * (около 10–15 мс даже на слабом ПК): ни одно задание не дольше кадра, анимация загрузки идёт ровно.
  */
-export const STRIP_PIXELS = PIXELS_PER_JOB / 4;
+export const STRIP_PIXELS = PIXELS_PER_JOB / 8;
+/** Листы объектов (жаровня, знамя, кот) — по нескольку кадров за задание, не больше стольких пикселей (около 15 мс). */
+const SHEET_PIXELS = PIXELS_PER_JOB / 2;
 
 /** Полосы строк [начало, конец) высоты h при ширине w — по STRIP_PIXELS пикселей. */
 export function strips(w: number, h: number): [number, number][] {
@@ -128,7 +177,7 @@ export function drawModelJobs(ctx: () => CanvasRenderingContext2D, x0: number, y
  */
 export function modelSheetJobs(scene: Phaser.Scene, key: string, w: number, h: number, frames: number, rate: number, anchor: Anchor, build: (f: number) => Model, view: Partial<View> = {}): (() => void)[] {
   const W = w * RES, H = h * RES;
-  const perJob = Math.max(1, Math.floor(PIXELS_PER_JOB / (W * H)));
+  const perJob = Math.max(1, Math.floor(SHEET_PIXELS / (W * H)));
   let tex: Phaser.Textures.CanvasTexture | null = null;
   const jobs: (() => void)[] = [() => {
     if (scene.textures.exists(key)) scene.textures.remove(key);

@@ -1,6 +1,7 @@
 /** Движение персонажей, бой, появление мобов. Все числа — в пикселях внутреннего разрешения (480x270). */
 export const SETTINGS = {
-  player: { displaySize: 32, speed: 60, radius: 5 },
+  /** displaySize — ширина кадра на экране (кадр героя 40 — с запасом под оружие; сам герой того же роста). */
+  player: { displaySize: 40, speed: 60, radius: 5 },
   mobSpacing: { gap: 2, iterations: 8 },
   /** Волны мобов в вылазке: дальше от игрока, чем виден экран. */
   spawn: { intervalSeconds: 9, maxEnemies: 22, telegraphSeconds: 0.9, minDistanceFromPlayer: 170, maxDistanceFromPlayer: 280 },
