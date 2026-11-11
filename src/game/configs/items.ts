@@ -149,7 +149,28 @@ export type LocationId = 'courtyard' | 'crypt' | 'forge';
  * maxWave; с каждым этажом враги крепче на hpPerFloor, а после каждого босса — ещё на hpGrowth (доли здоровья):
  * без роста по этажам сложенное в сумке оружие убивало всех с одного удара.
  */
-export const ARENA_FLOORS = { bossEvery: 10, maxWave: 18, hpGrowth: 0.25, hpPerFloor: 0.08 } as const;
+export const ARENA_FLOORS = {
+  bossEvery: 10, maxWave: 18, hpGrowth: 0.25, hpPerFloor: 0.08,
+  /** Пауза между этажами (секунды) и передышка после этажа с Королём — разрядка перед новым ростом. */
+  waveDelay: 2.5, bossBreather: 6,
+} as const;
+
+/**
+ * План прогрессии арены: с этажа from действует фаза — до следующей фазы; последняя — до конца вылазки.
+ * Каждая фаза меняет одно: mobs — кто приходит в волне (по кругу, в этом порядке; огр на первой арене — орк),
+ * rifts — открываются ли разломы в полу (если они есть на арене). Каждый bossEvery-й этаж — Король, фаза не важна.
+ */
+export interface ArenaPhase { from: number; mobs: readonly EnemyTypeId[]; rifts: boolean }
+export const ARENA_PHASES: readonly ArenaPhase[] = [
+  { from: 1, mobs: ['skeleton'], rifts: false },                                      // учимся: один тип врага
+  { from: 3, mobs: ['skeleton', 'orc'], rifts: false },                               // + орки — быстрее
+  { from: 4, mobs: ['skeleton', 'orc', 'archer'], rifts: false },                     // + лучники — угроза издалека
+  { from: 6, mobs: ['skeleton', 'orc', 'archer', 'skeleton', 'orc', 'ogre'], rifts: true }, // + разломы, дальше — всё вместе
+];
+/** Фаза плана на этом этаже. */
+export function arenaPhase(floor: number): ArenaPhase {
+  return ARENA_PHASES.filter((p) => p.from <= floor).at(-1) ?? ARENA_PHASES[0]!;
+}
 /**
  * Арена — уровень: этажи один за другим без конца — на каждом волна врагов (firstWave на первом, на perFloor больше на
  * каждом следующем), каждый ARENA_FLOORS.bossEvery-й — босс. Рекорд — сколько этажей пройдено за вылазку.

@@ -4,7 +4,7 @@ import { AbyssKing } from '../characters/AbyssKing';
 import { ENEMY_TYPES, type EnemyTypeId } from '../configs/characters';
 import { TEXTURES } from '../configs/assets';
 import { COLORS, DEPTH, SCENES } from '../configs/game';
-import { ARENA_FLOORS, ECONOMY, LOCATIONS, type LocationConfig, type LocationId } from '../configs/items';
+import { ARENA_FLOORS, arenaPhase, ECONOMY, LOCATIONS, type LocationConfig, type LocationId } from '../configs/items';
 import { SETTINGS } from '../configs/settings';
 import { AbyssSmoke } from '../systems/AbyssSmoke';
 import { addArena, ARENA_OVAL, ARENA_RIFT, ARENA_SIZE, arenaMiniKey } from '../systems/CastleArt';
@@ -32,12 +32,9 @@ function onFloor(deg: number, k: number): Point {
 }
 const RIFT = { x: ARENA_OVAL.cx, y: ARENA_OVAL.cy + ARENA_OVAL.ry - ARENA_RIFT.up } as const;
 const BOSS_START = onFloor(-90, 0.6);
-const WAVE_DELAY = 2.5;
 const SPAWN_DISTANCE = 112;
 /** Знамёна на дальней половине подиума: углы (градусы, как в onFloor) и во сколько раз меньше обычного — по высоте подиума. */
 const BANNERS = { at: [-160, -128, -52, -20], scale: 0.55 } as const;
-/** Состав волны по порядку появления (по кругу); огры — только со второй арены (на первой вместо них орки). */
-const WAVE_ORDER: EnemyTypeId[] = ['skeleton', 'orc', 'archer', 'skeleton', 'orc', 'ogre'];
 /** Где появляются враги: внешнее кольцо (через каждые 36°) и четыре точки ближе к середине — [угол, доля радиуса]. */
 const SPAWN_AT: readonly (readonly [number, number])[] = [
   ...Array.from({ length: 10 }, (_, i) => [i * 36 - 90, 0.8] as const),
@@ -91,7 +88,7 @@ export class ExpeditionScene extends WorldScene {
   private recordShown = false;
   private ending = false;
   private wave = 0;
-  private nextWaveIn = WAVE_DELAY;
+  private nextWaveIn: number = ARENA_FLOORS.waveDelay;
 
   constructor() { super({ key: SCENES.expedition }); }
 
@@ -110,7 +107,7 @@ export class ExpeditionScene extends WorldScene {
     this.recordShown = false;
     this.ending = false;
     this.wave = 0;
-    this.nextWaveIn = WAVE_DELAY;
+    this.nextWaveIn = ARENA_FLOORS.waveDelay;
     this.floorsCleared = 0;
     this.floorRifts = [];
     this.nextRiftIn = Phaser.Math.FloatBetween(FLOOR_RIFT.every[0], FLOOR_RIFT.every[1]);
@@ -184,9 +181,10 @@ export class ExpeditionScene extends WorldScene {
     else this.spawnWave();
   }
 
-  /** Этаж зачищен: счёт пройденных растёт; побили рекорд арены — сообщение (один раз за вылазку). */
+  /** Этаж зачищен: счёт пройденных растёт; побили рекорд арены — сообщение (один раз за вылазку). После Короля — передышка. */
   private floorCleared(): void {
     this.floorsCleared = this.wave;
+    if (this.wave % ARENA_FLOORS.bossEvery === 0) this.nextWaveIn = ARENA_FLOORS.bossBreather;
     this.ui.banner(`Этаж ${this.floorsCleared} пройден`, COLORS.blade, 1.4);
     if (!this.recordShown && this.best > 0 && this.floorsCleared > this.best) { this.recordShown = true; this.ui.message('Новый рекорд этажей!'); }
   }
@@ -200,11 +198,12 @@ export class ExpeditionScene extends WorldScene {
 
   private spawnWave(): void {
     const count = Math.min(ARENA_FLOORS.maxWave, this.location.firstWave + (this.wave - 1) * this.location.perFloor);
+    const { mobs } = arenaPhase(this.wave);
     this.ui.banner(`Этаж ${this.wave}`, COLORS.blade, 1.4);
     for (let i = 0; i < count; i++) {
       const free = SPAWN_POINTS.filter((p) => Math.hypot(p.x - this.player.x, p.y - this.player.y) >= SPAWN_DISTANCE);
       const p = free[i % free.length] ?? SPAWN_POINTS[i % SPAWN_POINTS.length]!;
-      const next = WAVE_ORDER[i % WAVE_ORDER.length]!;
+      const next = mobs[i % mobs.length]!;
       const type: EnemyTypeId = next === 'ogre' && this.location.level === 1 ? 'orc' : next;
       this.fx.ring(p.x, p.y, 16, COLORS.gold, 0.6);
       this.enemies.spawn(type, p.x, p.y, { hpMul: this.hpMul });
@@ -316,7 +315,7 @@ export class ExpeditionScene extends WorldScene {
     if (this.enemies.activeCount === 0) {
       if (this.wave > this.floorsCleared) this.floorCleared();
       this.nextWaveIn -= dt;
-      if (this.nextWaveIn <= 0) { this.nextWaveIn = WAVE_DELAY; this.nextFloor(); }
+      if (this.nextWaveIn <= 0) { this.nextWaveIn = ARENA_FLOORS.waveDelay; this.nextFloor(); }
     }
     this.updateObjective();
   }
@@ -347,7 +346,8 @@ export class ExpeditionScene extends WorldScene {
     this.player.speedMul = slow;
     for (const rift of this.floorRifts.filter((r) => r.t >= R.life)) { rift.img.destroy(); rift.glow.destroy(); rift.ring.destroy(); for (const c of rift.body) this.colliders.remove(c); }
     this.floorRifts = this.floorRifts.filter((r) => r.t < R.life);
-    if (!this.location.rifts?.floor) return;
+    // разломы открываются, только если они есть на арене и их уже ввёл план прогрессии (ARENA_PHASES)
+    if (!this.location.rifts?.floor || !arenaPhase(this.wave).rifts) return;
     // новая тройка — когда прежние закрылись и прошло время
     if (this.floorRifts.length > 0) return;
     this.nextRiftIn -= dt;
