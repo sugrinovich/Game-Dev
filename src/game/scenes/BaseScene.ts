@@ -388,6 +388,7 @@ export class BaseScene extends WorldScene {
 
   private showReport(r: Report): void {
     const lines: string[] = [];
+    if (r.died && r.killedBy) lines.push(`Вас сразил: ${r.killedBy}.`);
     if (r.floors) lines.push(r.floors.record ? `Пройдено этажей: ${r.floors.count}. Новый рекорд!` : `Пройдено этажей: ${r.floors.count}. Рекорд: ${r.floors.best}.`);
     lines.push(`Побеждено врагов: ${r.kills}.`);
     lines.push(r.coins > 0 ? `Заработано монет: ${r.coins}. Они уже в кошельке.` : 'Увы, но вы ничего не заработали.');

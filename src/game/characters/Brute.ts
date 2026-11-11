@@ -76,7 +76,7 @@ abstract class Brute extends Mob {
       this.arena.shake(0.006, 140);
       this.arena.fx.dust(x - 8, y); this.arena.fx.dust(x + 8, y);
       this.arena.fx.burst({ x, y, count: 14, speed: [30, 90], angle: [-Math.PI, 0], life: [0.3, 0.6], size: [2, 3], tints: [0x6a5a48, 0x8a7a68, 0x4a3a30], gravity: 200, depth: y + 2 });
-      if (Math.hypot(target.x - x, target.y - y) <= this.attack.slamRadius + SETTINGS.player.radius) this.arena.hurtPlayer(this.config.damage, x, y);
+      if (Math.hypot(target.x - x, target.y - y) <= this.attack.slamRadius + SETTINGS.player.radius) this.arena.hurtPlayer(this.config.damage, x, y, this.config.name);
       return;
     }
     this.arena.playSfx('swing');
@@ -85,7 +85,7 @@ abstract class Brute extends Mob {
       .setOrigin(SLASH_ORIGIN.x, SLASH_ORIGIN.y).setRotation(a).setDepth(this.y + 30).setTint(0xffc8a0);
     fitSlash(fx, A.reach, A.arc, 4).play('fx_slash');
     fx.once(Phaser.Animations.Events.ANIMATION_COMPLETE, () => fx.destroy());
-    if (inStrikeZone(target.x, target.y, this.x, this.y, a, A.reach, A.arc, SETTINGS.player.radius)) this.arena.hurtPlayer(this.config.damage, this.x, this.y);
+    if (inStrikeZone(target.x, target.y, this.x, this.y, a, A.reach, A.arc, SETTINGS.player.radius)) this.arena.hurtPlayer(this.config.damage, this.x, this.y, this.config.name);
   }
 }
 

@@ -22,6 +22,12 @@ const ANTHEM = {
   /** Бас — по такту (4 доли), начиная после затакта. */
   bass: ['C3', 'E3', 'F3', 'C3', 'G2', 'F2', 'A2', 'G2', 'C3', 'G2', 'A2', 'E2', 'F2', 'C3', 'G2', 'C3'],
 } as const;
+/**
+ * Частые звуки боя звучат каждый раз чуть выше или ниже (± PITCH_JITTER доли частоты): сотый одинаковый удар
+ * утомляет, а небольшой разброс сохраняет узнаваемость (лекция 6).
+ */
+const PITCH_JITTER = 0.05;
+const VARIED_SOUNDS: ReadonlySet<string> = new Set(['swing', 'slash', 'shing', 'heavy', 'thrust', 'bow', 'hit', 'hurt', 'dash', 'poof', 'splat', 'pickup']);
 /** Частота ноты: C4 = до первой октавы. */
 function freq(note: string): number {
   const names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -45,6 +51,8 @@ class AudioSystem {
   private step = 0;
   /** Играющий гимн: его громкость (отключить — тишина сразу) и таймер конца; музыка, которая играла до него. */
   private anthem: { gain: GainNode; timer: number; resume: 'calm' | 'tense' | 'off' } | null = null;
+  /** Множитель частоты для звука, который играет сейчас (play задаёт его для VARIED_SOUNDS, потом — снова 1). */
+  private pitch = 1;
 
   constructor() {
     try { this.muted = JSON.parse(localStorage.getItem(GAME.settingsKey) ?? '{}').muted === true; } catch { /* нет настроек */ }
@@ -79,8 +87,8 @@ class AudioSystem {
     const o = this.ctx.createOscillator();
     const g = this.ctx.createGain();
     o.type = type;
-    o.frequency.setValueAtTime(f0, t);
-    o.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t + dur);
+    o.frequency.setValueAtTime(f0 * this.pitch, t);
+    o.frequency.exponentialRampToValueAtTime(Math.max(20, f1 * this.pitch), t + dur);
     g.gain.setValueAtTime(0.0001, t);
     g.gain.exponentialRampToValueAtTime(vol, t + Math.min(0.02, dur / 3));
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
@@ -98,7 +106,7 @@ class AudioSystem {
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
     const f = this.ctx.createBiquadFilter();
-    f.type = 'bandpass'; f.frequency.value = freq; f.Q.value = q;
+    f.type = 'bandpass'; f.frequency.value = freq * this.pitch; f.Q.value = q;
     const g = this.ctx.createGain();
     g.gain.value = vol;
     src.connect(f); f.connect(g); g.connect(this.master);
@@ -107,6 +115,12 @@ class AudioSystem {
 
   play(name: string): void {
     if (!this.ctx || this.muted) return;
+    this.pitch = VARIED_SOUNDS.has(name) ? 1 + (Math.random() * 2 - 1) * PITCH_JITTER : 1;
+    this.voice(name);
+    this.pitch = 1;
+  }
+
+  private voice(name: string): void {
     switch (name) {
       case 'click': this.tone(520, 700, 0.06, 'square', 0.08); break;
       case 'select': this.tone(380, 380, 0.05, 'square', 0.05); break;
