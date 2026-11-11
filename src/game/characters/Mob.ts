@@ -178,7 +178,7 @@ export abstract class Mob extends Phaser.GameObjects.Sprite {
     const reach = this.config.radius + SETTINGS.player.radius + 1;
     if (Math.hypot(target.x - this.x, target.y - this.y) <= reach) {
       this.contactCd = 0.9;
-      this.arena.hurtPlayer(damage, this.x, this.y);
+      this.arena.hurtPlayer(damage, this.x, this.y, this.config.name);
     }
   }
 

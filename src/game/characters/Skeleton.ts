@@ -79,7 +79,7 @@ export class SkeletonWarrior extends SkeletonMob {
       .setOrigin(SLASH_ORIGIN.x, SLASH_ORIGIN.y).setRotation(a).setDepth(this.y + 30).setTint(0xd8d0ff);
     fitSlash(fx, WARRIOR.reach, WARRIOR.arc, 4).play('fx_slash');
     fx.once(Phaser.Animations.Events.ANIMATION_COMPLETE, () => fx.destroy());
-    if (inStrikeZone(target.x, target.y, this.x, this.y, a, WARRIOR.reach, WARRIOR.arc, SETTINGS.player.radius)) this.arena.hurtPlayer(this.config.damage, this.x, this.y);
+    if (inStrikeZone(target.x, target.y, this.x, this.y, a, WARRIOR.reach, WARRIOR.arc, SETTINGS.player.radius)) this.arena.hurtPlayer(this.config.damage, this.x, this.y, this.config.name);
   }
 }
 
@@ -152,7 +152,7 @@ export class SkeletonArcher extends SkeletonMob {
       a.life -= dt;
       const blocked = this.arena.move(a.pos, a.vx * dt, a.vy * dt, 1);
       const hit = Math.hypot(target.x - a.pos.x, target.y - a.pos.y) < SETTINGS.player.radius + 4;
-      if (hit) this.arena.hurtPlayer(this.config.damage, a.pos.x, a.pos.y);
+      if (hit) this.arena.hurtPlayer(this.config.damage, a.pos.x, a.pos.y, this.config.name);
       if (hit || blocked || a.life <= 0) {
         this.arena.fx.burst({ x: a.pos.x, y: a.pos.y - ARCHER.arrowHeight, count: 4, speed: [10, 40], life: [0.2, 0.4], size: [1, 2], tints: [0x8a5328, 0xe8e0c8], gravity: 120, depth: a.pos.y + 5 });
         a.img.destroy();

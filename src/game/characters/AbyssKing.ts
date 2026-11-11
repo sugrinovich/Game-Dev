@@ -81,7 +81,7 @@ export class AbyssKing extends Mob {
       this.arena.fx.burst({ x, y, count: 28, speed: [30, 120], life: [0.3, 0.8], size: [2, 5], tints: [0xfffbe0, 0xffe070, 0xffa030, 0xf05a1e], gravity: 60, blend: Phaser.BlendModes.ADD, depth: y + 5 });
       this.arena.playSfx('slam');
       this.arena.shake(0.006, 160);
-      if (Math.hypot(target.x - x, target.y - y) <= KING.blastRadius + SETTINGS.player.radius) this.arena.hurtPlayer(this.config.damage, x, y);
+      if (Math.hypot(target.x - x, target.y - y) <= KING.blastRadius + SETTINGS.player.radius) this.arena.hurtPlayer(this.config.damage, x, y, this.config.name);
       b.sprite.destroy();
       this.bolts.splice(i, 1);
     }

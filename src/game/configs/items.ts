@@ -149,11 +149,60 @@ export type LocationId = 'courtyard' | 'crypt' | 'forge';
  * maxWave; с каждым этажом враги крепче на hpPerFloor, а после каждого босса — ещё на hpGrowth (доли здоровья):
  * без роста по этажам сложенное в сумке оружие убивало всех с одного удара.
  */
-export const ARENA_FLOORS = { bossEvery: 10, maxWave: 18, hpGrowth: 0.25, hpPerFloor: 0.08 } as const;
+export const ARENA_FLOORS = {
+  bossEvery: 10, maxWave: 18, hpGrowth: 0.25, hpPerFloor: 0.08,
+  /** Пауза между этажами (секунды) и передышка после этажа с Королём — разрядка перед новым ростом. */
+  waveDelay: 2.5, bossBreather: 6,
+  /** Враги волны появляются не ближе стольких пикселей к герою. */
+  spawnDistance: 112,
+} as const;
+
+/**
+ * План прогрессии арены: с этажа from действует фаза — до следующей фазы; последняя — до конца вылазки.
+ * Каждая фаза меняет одно: mobs — кто приходит в волне (по кругу, в этом порядке), rifts — открываются ли разломы
+ * в полу (если они есть на арене). Каждый bossEvery-й этаж — Король, фаза на нём не важна.
+ */
+export interface ArenaPhase { from: number; mobs: readonly EnemyTypeId[]; rifts: boolean }
+export const ARENA_PHASES: readonly ArenaPhase[] = [
+  { from: 1, mobs: ['skeleton'], rifts: false },                                      // учимся: один тип врага
+  { from: 3, mobs: ['skeleton', 'orc'], rifts: false },                               // + орки — быстрее
+  { from: 4, mobs: ['skeleton', 'orc', 'archer'], rifts: false },                     // + лучники — угроза издалека
+  { from: 6, mobs: ['skeleton', 'orc', 'archer', 'skeleton', 'orc', 'orc'], rifts: true },  // + разломы, дальше — всё вместе
+  { from: 11, mobs: ['skeleton', 'orc', 'archer', 'skeleton', 'orc', 'ogre'], rifts: true }, // после Короля — огры (удар по кругу)
+];
+/** Фаза плана на этом этаже. */
+export function arenaPhase(floor: number): ArenaPhase {
+  return ARENA_PHASES.filter((p) => p.from <= floor).at(-1) ?? ARENA_PHASES[0]!;
+}
+
+/**
+ * Разломы в полу (первая арена, с фазы, где rifts: true): открываются сразу по group штук раз в every секунд (случайно
+ * в пределах, когда прежние закрылись), живут life секунд, раскрываются за open секунд; в радиусе radius герой идёт
+ * медленнее (slow — доля скорости); не ближе minGap к герою и друг к другу при появлении.
+ */
+export const FLOOR_RIFT = { every: [5, 8], life: 8, open: 0.7, radius: 132, slow: 0.5, group: 3, minGap: 60 } as const;
+
+/**
+ * Усиления вылазки: после каждого Короля игрок выбирает одно из BOON_CHOICES случайных (лекция 7: выбор сильнее
+ * автоматического улучшения). Действуют до конца вылазки и складываются. stat и bonus — как у предметов
+ * (Session.bonus); heal — сразу вылечить; poultice — сразу добавить эликсиров.
+ */
+export type RunBoonId = 'fury' | 'swift' | 'vigor' | 'greed' | 'flask';
+export interface RunBoon { name: string; description: string; icon: string; stat?: ItemStat; bonus?: number; heal?: number; poultice?: number }
+export const RUN_BOONS: Record<RunBoonId, RunBoon> = {
+  fury: { name: 'Ярость Бездны', description: 'Урон +1 до конца вылазки.', icon: 'item_ring', stat: 'damage', bonus: 1 },
+  swift: { name: 'Лёгкий шаг', description: 'Бег +15% до конца вылазки.', icon: 'item_necklace', stat: 'speed', bonus: 15 },
+  vigor: { name: 'Крепость', description: 'Здоровье +15 до конца вылазки и сразу лечит 15.', icon: 'item_strong_belt', stat: 'maxHp', bonus: 15, heal: 15 },
+  greed: { name: 'Жадность', description: 'Монеты за врагов +25% до конца вылазки.', icon: 'item_luck_charm', stat: 'coins', bonus: 25 },
+  flask: { name: 'Запасной эликсир', description: 'Ещё один эликсир (Q) прямо сейчас.', icon: 'ui_potion', poultice: 1 },
+};
+export const RUN_BOON_IDS = Object.keys(RUN_BOONS) as RunBoonId[];
+export const BOON_CHOICES = 3;
 /**
  * Арена — уровень: этажи один за другим без конца — на каждом волна врагов (firstWave на первом, на perFloor больше на
  * каждом следующем), каждый ARENA_FLOORS.bossEvery-й — босс. Рекорд — сколько этажей пройдено за вылазку.
- * mobs — какие враги приходят; rifts — разломы Бездны: объёмный разлом на задней стене и замедляющие разломы в полу.
+ * mobs — чьи листы кадров рисуются при загрузке (кто приходит — решает ARENA_PHASES; огр первой арены рисуется позже,
+ * пока открыто окно выбора после Короля); rifts — разломы Бездны: объёмный разлом на задней стене и замедляющие в полу.
  */
 export interface LocationConfig {
   id: LocationId; name: string; level: number; stars: number; description: string;

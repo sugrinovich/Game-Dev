@@ -15,7 +15,8 @@ export interface Arena {
   move(e: Point, dx: number, dy: number, radius: number, flying?: boolean): boolean;
   /** Удар игрока по сектору. Возвращает число пораженных целей. */
   playerStrike(x: number, y: number, dirX: number, dirY: number, range: number, halfArc: number, damage: number): number;
-  hurtPlayer(amount: number, fromX: number, fromY: number): void;
+  /** Урон герою; source — кто бьёт (имя врага): его покажет отчёт, если удар оказался смертельным. */
+  hurtPlayer(amount: number, fromX: number, fromY: number, source: string): void;
   /** Ближайший живой враг не дальше range от точки (самонаводящаяся магия); нет — null. */
   nearestEnemy(x: number, y: number, range: number): (Point & { active: boolean }) | null;
   shake(intensity: number, ms?: number): void;

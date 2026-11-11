@@ -33,6 +33,12 @@ const JOB_GUESS_MS = 4;
 /** Полоса-меч: начало клинка у гарды, середина клинка по высоте, длина клинка; раскалённый край в пикселях. */
 const SWORD = { x: 136, y: 124, len: 216, hot: 22 } as const;
 /**
+ * Устройство без мыши и клавиатуры (телефон, планшет): управления касанием в игре пока нет — вместо «Нажмите любую
+ * клавишу» заставка честно говорит, что нужна клавиатура (лекция 5: способ ввода — часть UX).
+ */
+const TOUCH_ONLY = typeof window !== 'undefined' && window.matchMedia?.('(hover: none) and (pointer: coarse)').matches === true;
+const PRESS_TEXT = TOUCH_ONLY ? 'Нужна клавиатура: игра пока только для компьютера' : 'Нажмите любую клавишу';
+/**
  * Полоса загрузки плавно догоняет настоящий прогресс (доля готовых заданий): за секунду проходит ease-долю отставания,
  * но не медленнее minSpeed (доля полосы в секунду) — без рывков и остановок, то быстрее, то медленнее. Конец загрузки —
  * когда полоса дошла до конца.
@@ -113,7 +119,7 @@ export class PreloadScene extends Phaser.Scene {
     this.edgeGlow = this.add.image(SWORD.x, SWORD.y, TEXTURES.glow).setTint(0xff8a2a).setBlendMode(Phaser.BlendModes.ADD).setScale(0.9, 0.5).setDepth(d + 1);
     this.status = new PText(this, W / 2, SWORD.y + 10, '', { ax: 0.5, color: COLORS.text, shine: true }).setDepth(d);
     this.buildStory();
-    this.press = new PText(this, W / 2, SWORD.y + 26, 'Нажмите любую клавишу', { ax: 0.5, color: COLORS.blade, shine: true }).setDepth(d).setAlpha(0);
+    this.press = new PText(this, W / 2, SWORD.y + 26, PRESS_TEXT, { ax: 0.5, color: COLORS.blade, shine: true }).setDepth(d).setAlpha(0);
 
     this.stages = this.textureStages();
     this.jobsTotal = this.stages.reduce((n, s) => n + s.jobs.length, 0);

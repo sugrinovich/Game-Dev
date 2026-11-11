@@ -1,15 +1,16 @@
 import Phaser from 'phaser';
 import type { Mob } from '../characters/Mob';
 import { AbyssKing } from '../characters/AbyssKing';
-import { ENEMY_TYPES, type EnemyTypeId } from '../configs/characters';
+import { ENEMY_TYPES } from '../configs/characters';
 import { TEXTURES } from '../configs/assets';
 import { COLORS, DEPTH, SCENES } from '../configs/game';
-import { ARENA_FLOORS, ECONOMY, LOCATIONS, type LocationConfig, type LocationId } from '../configs/items';
+import { ARENA_FLOORS, arenaPhase, BOON_CHOICES, ECONOMY, FLOOR_RIFT, LOCATIONS, RUN_BOON_IDS, RUN_BOONS, type LocationConfig, type LocationId, type RunBoonId } from '../configs/items';
 import { SETTINGS } from '../configs/settings';
 import { AbyssSmoke } from '../systems/AbyssSmoke';
 import { addArena, ARENA_OVAL, ARENA_RIFT, ARENA_SIZE, arenaMiniKey } from '../systems/CastleArt';
 import { ARENA_RIFTS, textureResolution } from '../systems/CastleModels';
 import { EnemyManager } from '../systems/EnemyManager';
+import { ensureHeroSheet } from '../systems/HeroArt';
 import { addIcon } from '../systems/IconArt';
 import { audio } from '../systems/Sfx';
 import type { Circle } from '../systems/Colliders';
@@ -32,12 +33,8 @@ function onFloor(deg: number, k: number): Point {
 }
 const RIFT = { x: ARENA_OVAL.cx, y: ARENA_OVAL.cy + ARENA_OVAL.ry - ARENA_RIFT.up } as const;
 const BOSS_START = onFloor(-90, 0.6);
-const WAVE_DELAY = 2.5;
-const SPAWN_DISTANCE = 112;
 /** Знамёна на дальней половине подиума: углы (градусы, как в onFloor) и во сколько раз меньше обычного — по высоте подиума. */
 const BANNERS = { at: [-160, -128, -52, -20], scale: 0.55 } as const;
-/** Состав волны по порядку появления (по кругу); огры — только со второй арены (на первой вместо них орки). */
-const WAVE_ORDER: EnemyTypeId[] = ['skeleton', 'orc', 'archer', 'skeleton', 'orc', 'ogre'];
 /** Где появляются враги: внешнее кольцо (через каждые 36°) и четыре точки ближе к середине — [угол, доля радиуса]. */
 const SPAWN_AT: readonly (readonly [number, number])[] = [
   ...Array.from({ length: 10 }, (_, i) => [i * 36 - 90, 0.8] as const),
@@ -48,12 +45,6 @@ const SPAWN_POINTS = SPAWN_AT.map(([deg, k]) => onFloor(deg, k));
 const PILLARS = { at: [-145, -35, 145, 35], k: 0.62 } as const;
 const BRAZIERS = { at: [-142, -38], k: 0.88 } as const;
 
-/**
- * Разломы в полу (первая арена): открываются сразу по group штук раз в every секунд (случайно в пределах, когда прежние
- * закрылись), живут life секунд, раскрываются за open секунд; в радиусе radius герой идёт медленнее (slow — доля
- * скорости); не ближе minGap к герою и друг к другу при появлении.
- */
-const FLOOR_RIFT = { every: [5, 8], life: 8, open: 0.7, radius: 132, slow: 0.5, group: 3, minGap: 60 } as const;
 /** Разломы в полу открываются внутри такой доли круга арены. */
 const FLOOR_RIFT_AREA = 0.72;
 /**
@@ -62,6 +53,10 @@ const FLOOR_RIFT_AREA = 0.72;
  * hitR — насколько велика воронка для удара (к дальности меча), reach — её полуширина (не открываться на враге).
  */
 const RIFT_BODY = { circles: [[-12, 11], [0, 12], [12, 11]] as const, reach: 23, hitR: 16, hits: 4 } as const;
+/** Окно выбора усиления открывается через столько мс после победы над Королём — сначала видна награда. */
+const BOON_DELAY_MS = 1200;
+/** Подсказка о разломах в полу (session.firstTime): показывается один раз за всю игру. */
+const RIFT_TIP = 'floorRift';
 /** Разлом в подиуме посередине дальней стороны: низ модели — на краю пола (y карты). */
 const WALL_RIFT_Y = ARENA_OVAL.cy - ARENA_OVAL.ry;
 interface FloorRift {
@@ -91,7 +86,7 @@ export class ExpeditionScene extends WorldScene {
   private recordShown = false;
   private ending = false;
   private wave = 0;
-  private nextWaveIn = WAVE_DELAY;
+  private nextWaveIn: number = ARENA_FLOORS.waveDelay;
 
   constructor() { super({ key: SCENES.expedition }); }
 
@@ -110,8 +105,9 @@ export class ExpeditionScene extends WorldScene {
     this.recordShown = false;
     this.ending = false;
     this.wave = 0;
-    this.nextWaveIn = WAVE_DELAY;
+    this.nextWaveIn = ARENA_FLOORS.waveDelay;
     this.floorsCleared = 0;
+    this.lastHitBy = '';
     this.floorRifts = [];
     this.nextRiftIn = Phaser.Math.FloatBetween(FLOOR_RIFT.every[0], FLOOR_RIFT.every[1]);
     const map = new MapBounds(MAP_W, MAP_H, { side: WALK.cx - WALK.rx, top: WALK.cy - WALK.ry, bottom: MAP_H - WALK.cy - WALK.ry }, WALK);
@@ -184,11 +180,44 @@ export class ExpeditionScene extends WorldScene {
     else this.spawnWave();
   }
 
-  /** Этаж зачищен: счёт пройденных растёт; побили рекорд арены — сообщение (один раз за вылазку). */
+  /**
+   * Этаж зачищен: счёт пройденных растёт; побили рекорд арены — сообщение (один раз за вылазку). После Короля —
+   * передышка и выбор усиления (окно выбора останавливает мир: передышка идёт после выбора).
+   */
   private floorCleared(): void {
     this.floorsCleared = this.wave;
+    if (this.wave % ARENA_FLOORS.bossEvery === 0) {
+      this.nextWaveIn = ARENA_FLOORS.bossBreather;
+      this.time.delayedCall(BOON_DELAY_MS, () => this.offerBoons());
+    }
     this.ui.banner(`Этаж ${this.floorsCleared} пройден`, COLORS.blade, 1.4);
     if (!this.recordShown && this.best > 0 && this.floorsCleared > this.best) { this.recordShown = true; this.ui.message('Новый рекорд этажей!'); }
+  }
+
+  /** Дар после Короля: BOON_CHOICES случайных усилений из RUN_BOONS, игрок берёт одно до конца вылазки. */
+  private offerBoons(): void {
+    if (this.ending || !this.player.alive) return;
+    const ids = Phaser.Utils.Array.Shuffle([...RUN_BOON_IDS]).slice(0, BOON_CHOICES);
+    this.ui.openChoice({
+      title: 'Дар павшего Короля',
+      lines: ['Выберите одно усиление до конца вылазки.'],
+      options: ids.map((id) => ({ label: RUN_BOONS[id].name, desc: RUN_BOONS[id].description, icon: RUN_BOONS[id].icon, onChoose: () => this.takeBoon(id) })),
+    });
+    // пока открыто окно — заранее рисуем листы врагов следующей фазы (огр рисуется долго: не посреди волны)
+    this.time.delayedCall(BOON_DELAY_MS / 2, () => this.warmNextPhase());
+  }
+
+  private takeBoon(id: RunBoonId): void {
+    const boon = RUN_BOONS[id];
+    session.takeBoon(id);
+    if (boon.heal) this.player.heal(boon.heal);
+    this.fx.floatText(this.player.x, this.player.y - 34, boon.name, COLORS.gold);
+    audio.play('chime');
+  }
+
+  /** Листы кадров врагов следующего этажа рисуются заранее (ensureHeroSheet ничего не делает, если лист уже есть). */
+  private warmNextPhase(): void {
+    for (const type of new Set(arenaPhase(this.wave + 1).mobs)) ensureHeroSheet(this, ENEMY_TYPES[type].outfit, ENEMY_TYPES[type].body);
   }
 
   /** Во сколько раз крепче враги: с каждым этажом — на hpPerFloor, после каждого босса — ещё на hpGrowth. */
@@ -200,19 +229,19 @@ export class ExpeditionScene extends WorldScene {
 
   private spawnWave(): void {
     const count = Math.min(ARENA_FLOORS.maxWave, this.location.firstWave + (this.wave - 1) * this.location.perFloor);
+    const { mobs } = arenaPhase(this.wave);
     this.ui.banner(`Этаж ${this.wave}`, COLORS.blade, 1.4);
     for (let i = 0; i < count; i++) {
-      const free = SPAWN_POINTS.filter((p) => Math.hypot(p.x - this.player.x, p.y - this.player.y) >= SPAWN_DISTANCE);
+      const free = SPAWN_POINTS.filter((p) => Math.hypot(p.x - this.player.x, p.y - this.player.y) >= ARENA_FLOORS.spawnDistance);
       const p = free[i % free.length] ?? SPAWN_POINTS[i % SPAWN_POINTS.length]!;
-      const next = WAVE_ORDER[i % WAVE_ORDER.length]!;
-      const type: EnemyTypeId = next === 'ogre' && this.location.level === 1 ? 'orc' : next;
+      const type = mobs[i % mobs.length]!;
       this.fx.ring(p.x, p.y, 16, COLORS.gold, 0.6);
       this.enemies.spawn(type, p.x, p.y, { hpMul: this.hpMul });
     }
   }
 
   private spawnBoss(): void {
-    const far = SPAWN_POINTS.find((p) => Math.hypot(p.x - this.player.x, p.y - this.player.y) > SPAWN_DISTANCE) ?? BOSS_START;
+    const far = SPAWN_POINTS.find((p) => Math.hypot(p.x - this.player.x, p.y - this.player.y) > ARENA_FLOORS.spawnDistance) ?? BOSS_START;
     this.kingDown = false;
     this.king = this.enemies.spawn('king', far.x, far.y, { hpMul: this.hpMul }) as AbyssKing;
     this.ui.banner(ENEMY_TYPES.king.name, COLORS.bad, 2);
@@ -292,6 +321,7 @@ export class ExpeditionScene extends WorldScene {
     const floors = session.recordArenaFloors(this.location.id, this.floorsCleared);
     const report = session.finishRun(died, this.kingDown, this.cleared);
     report.floors = floors;
+    if (died && this.lastHitBy) report.killedBy = this.lastHitBy;
     audio.play('portal');
     this.goTo(SCENES.base, { arrival: true });
   }
@@ -316,7 +346,7 @@ export class ExpeditionScene extends WorldScene {
     if (this.enemies.activeCount === 0) {
       if (this.wave > this.floorsCleared) this.floorCleared();
       this.nextWaveIn -= dt;
-      if (this.nextWaveIn <= 0) { this.nextWaveIn = WAVE_DELAY; this.nextFloor(); }
+      if (this.nextWaveIn <= 0) { this.nextWaveIn = ARENA_FLOORS.waveDelay; this.nextFloor(); }
     }
     this.updateObjective();
   }
@@ -347,13 +377,22 @@ export class ExpeditionScene extends WorldScene {
     this.player.speedMul = slow;
     for (const rift of this.floorRifts.filter((r) => r.t >= R.life)) { rift.img.destroy(); rift.glow.destroy(); rift.ring.destroy(); for (const c of rift.body) this.colliders.remove(c); }
     this.floorRifts = this.floorRifts.filter((r) => r.t < R.life);
-    if (!this.location.rifts?.floor) return;
+    // разломы открываются, только если они есть на арене и их уже ввёл план прогрессии (ARENA_PHASES)
+    if (!this.location.rifts?.floor || !arenaPhase(this.wave).rifts) return;
     // новая тройка — когда прежние закрылись и прошло время
     if (this.floorRifts.length > 0) return;
     this.nextRiftIn -= dt;
     if (this.nextRiftIn > 0) return;
     this.nextRiftIn = Phaser.Math.FloatBetween(R.every[0], R.every[1]);
     for (let i = 0; i < R.group; i++) this.openFloorRift();
+    this.teachRifts();
+  }
+
+  /** Первые разломы в полу (один раз за всю игру): правило сообщается в момент, когда оно понадобилось. */
+  private teachRifts(): void {
+    if (this.floorRifts.length === 0 || !session.firstTime(RIFT_TIP)) return;
+    this.ui.banner('Разлом замедляет', COLORS.bad, 2.4);
+    this.ui.message(`Ударов, чтобы разбить разлом: ${RIFT_BODY.hits}`);
   }
 
   /** Новый разлом — в свободном месте пола, не под героем и не на разломе возврата. */

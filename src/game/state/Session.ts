@@ -1,6 +1,6 @@
 import { GAME } from '../configs/game';
 import { SETTINGS } from '../configs/settings';
-import { BAG_START, CHEST, chestCapacity, departmentOf, ECONOMY, EQUIPMENT, EQUIPMENT_IDS, LOCATIONS, RARITIES, POCKETS, ROOM_IDS, ROOMS, SHOP_ITEMS, type BagSize, type EquipmentId, type ItemStat, type LocationId, type Rarity, type RoomId, type ShopItemId } from '../configs/items';
+import { BAG_START, CHEST, chestCapacity, departmentOf, ECONOMY, EQUIPMENT, EQUIPMENT_IDS, LOCATIONS, RARITIES, POCKETS, ROOM_IDS, ROOMS, RUN_BOONS, SHOP_ITEMS, type BagSize, type EquipmentId, type ItemStat, type LocationId, type Rarity, type RoomId, type RunBoonId, type ShopItemId } from '../configs/items';
 
 /** Место предмета в рюкзаке: левая верхняя клетка и поворот (четверти оборота по часовой стрелке). */
 export interface BagSpot { x: number; y: number; rot: number }
@@ -63,7 +63,7 @@ function fresh(): SaveData {
 
 /** Итоги вылазки для окна отчёта в лагере. */
 /** Итоги вылазки; floors — сколько этажей пройдено, побит ли рекорд арены и сам рекорд. */
-export interface Report { died: boolean; kills: number; king: boolean; coins: number; cleared: boolean; floors?: { count: number; record: boolean; best: number } }
+export interface Report { died: boolean; kills: number; king: boolean; coins: number; cleared: boolean; floors?: { count: number; record: boolean; best: number }; killedBy?: string }
 
 /** Всё, что игра помнит: сохранение + текущая вылазка. Один общий объект на игру. */
 class Session {
@@ -71,6 +71,8 @@ class Session {
   hp = 60;
   runKills = 0;
   runCoins = 0;
+  /** Усиления этой вылазки (RUN_BOONS): сколько добавлено к параметрам. Не сохраняются — только до конца вылазки. */
+  runBonus: Partial<Record<ItemStat, number>> = {};
   lastReport: Report | null = null;
 
   hasSave(): boolean {
@@ -139,7 +141,16 @@ class Session {
   // ---- параметры героя: постройки + надетые доспехи и вещи в рюкзаке ----
   /** Сколько дают все действующие предметы. */
   bonus(stat: ItemStat): number {
-    return EQUIPMENT_IDS.reduce((sum, id) => sum + (this.data.equipped[id] && EQUIPMENT[id].stat === stat ? EQUIPMENT[id].bonus ?? 0 : 0), 0);
+    const items = EQUIPMENT_IDS.reduce((sum, id) => sum + (this.data.equipped[id] && EQUIPMENT[id].stat === stat ? EQUIPMENT[id].bonus ?? 0 : 0), 0);
+    return items + (this.runBonus[stat] ?? 0);
+  }
+
+  /** Взять усиление вылазки (выбор после Короля): к параметру — до конца вылазки, эликсиры — сразу. */
+  takeBoon(id: RunBoonId): void {
+    const boon = RUN_BOONS[id];
+    if (boon.stat) this.runBonus[boon.stat] = (this.runBonus[boon.stat] ?? 0) + (boon.bonus ?? 0);
+    if (boon.poultice) this.data.poultice += boon.poultice;
+    this.save();
   }
   /** Размер сумки: у надетой в слот сумки — свой, без неё — стартовый. */
   get bagSize(): BagSize {
@@ -169,7 +180,11 @@ class Session {
   /** Перезарядка рывка (сапоги ветра — короче). */
   get dashCooldown(): number { return SETTINGS.combat.dashCooldown * (1 - this.bonus('dash') / 100); }
 
-  clearRun(): void { this.runKills = 0; this.runCoins = 0; }
+  /** Конец вылазки: счётчики и усиления обнуляются; здоровье не больше нового максимума (без «Крепости»). */
+  clearRun(): void {
+    this.runKills = 0; this.runCoins = 0; this.runBonus = {};
+    this.hp = Math.min(this.hp, this.maxHp);
+  }
 
   earnCoins(amount: number): void {
     this.data.coins += amount;

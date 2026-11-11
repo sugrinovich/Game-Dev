@@ -214,7 +214,12 @@ export abstract class WorldScene extends Phaser.Scene implements Arena {
 
   playerStrike(_x: number, _y: number, _dx: number, _dy: number, _range: number, _arc: number, _damage: number): number { return 0; }
 
-  hurtPlayer(amount: number, fromX: number, fromY: number): void { this.player.hurt(amount, fromX, fromY); }
+  /** Кто последним ранил героя (имя врага) — причина поражения в отчёте. */
+  protected lastHitBy = '';
+
+  hurtPlayer(amount: number, fromX: number, fromY: number, source: string): void {
+    if (this.player.hurt(amount, fromX, fromY)) this.lastHitBy = source;
+  }
 
   nearestEnemy(_x: number, _y: number, _range: number): (Point & { active: boolean }) | null { return null; }
 
